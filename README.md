@@ -1,20 +1,20 @@
 # NFT Gaming ZK-DEX
 
-ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니다. 이 시스템은 NFT 소유권의 증명과 전송 과정에서 개인정보를 보호하며, 온체인 상의 프라이버시를 강화한 NFT 거래 및 게임 아이템 교환 환경을 제공합니다.
+A **Privacy-Preserving NFT Gaming DEX** project based on ZK-SNARKs. This system protects personal information during NFT ownership verification and transfer, providing a secure environment for NFT trading and game item exchange with enhanced on-chain privacy.
 
-## 🚀 프로젝트 개요
+## 🚀 Project Overview
 
-본 프로젝트는 영지식 증명(Zero-Knowledge Proofs)을 활용하여 전통적인 NFT 전송 방식의 단점인 '소유권 노출' 문제를 해결합니다. 사용자는 자신의 NFT 소유권을 증명하면서도, 구체적인 자산 내역이나 거래 경로를 외부에 드러내지 않고 안전하게 전송할 수 있습니다.
+This project utilizes Zero-Knowledge Proofs (ZKPs) to solve the "exposure of ownership" issue, a drawback of traditional NFT transfer methods. Users can privately transfer assets and prove ownership without revealing specific transaction paths or asset details.
 
-### 핵심 기능 (F1: Private NFT Transfer)
-- **비공개 NFT 전송**: UTXO 스타일의 '노트(Note)' 시스템을 활용하여 NFT 소유권 이전.
-- **온체인 검증**: Groth16 증명을 통해 온체인에서 전송의 유효성을 즉시 검증.
-- **이중 지불 방지**: 널리파이어(Nullifier) 메커니즘을 적용하여 동일 자산의 중복 사용 차단.
-- **데이터 보안**: ECDH(Elliptic-Curve Diffie-Hellman) 암호화를 통해 수신자만 자신의 자산 데이터를 복호화 가능.
+### Key Features (F1: Private NFT Transfer)
+- **Private NFT Transfer**: Transfer NFT ownership using a UTXO-style "Note" system.
+- **On-chain Verification**: Instant validation of transfer validity on-chain via Groth16 proofs.
+- **Double-Spend Prevention**: Implementation of a Nullifier mechanism to block duplicate usage of the same asset.
+- **Data Security**: ECDH (Elliptic-Curve Diffie-Hellman) encryption ensures only the recipient can decrypt their asset data.
 
 ---
 
-## 🛠 기술 스택
+## 🛠 Tech Stack
 
 - **Smart Contracts**: `Solidity 0.8.20`, `Hardhat`
 - **ZK Logic**: `Circom 2.1.0`, `SnarkJS`, `Groth16`
@@ -24,69 +24,74 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 
 ---
 
-## 📂 프로젝트 구조
+## 📂 Project Structure
 
 ```text
 .
-├── circuits/           # Circom 영지식 회로 (소유권 증명 및 전송 로직)
-├── contracts/          # 이더리움 스마트 컨트랙트 (PrivateNFT, Verifiers)
-├── frontend/           # React 기반 프론트엔드 대시보드
-├── scripts/            # 회로 컴파일 및 배포 자동화 스크립트
-└── test/               # 회로 단위 테스트 및 통합 테스트
+├── circuits/           # Circom ZK circuits (Ownership proof & transfer logic)
+├── contracts/          # Ethereum smart contracts (PrivateNFT, Verifiers)
+├── frontend/           # React-based frontend dashboard
+├── scripts/            # Scripts for circuit compilation & deployment
+└── test/               # Circuit unit tests & integration tests
 ```
 
 ---
 
-## ✅ 테스트 현황 (24/24 통과)
+## ✅ Test Status (24/24 Passed)
 
-현재 모든 핵심 기능에 대한 테스트가 완료되어 안정성을 확보했습니다.
+All core features have been tested and verified for stability.
 
-### 1. 회로 단위 테스트 (11개)
-- 유효한 증명 생성 및 검증 통과
-- 잘못된 Secret Key, NFT ID, 소금값(Salt) 등에 대한 변조 시도 차단
-- Public Signal 변조 시 검증 실패 확인
+### 1. Circuit Unit Tests (11)
+- Valid proof generation & verification: Passed
+- Tampering attempts (invalid Secret Key, NFT ID, Salt, etc.): Blocked
+- Public Signal manipulation: Verification failed as expected
 
-### 2. Hardhat 통합 테스트 (13개)
-- NFT 등록 및 중복 등록 거부
-- 실제 ZK 증명을 통한 전송 및 체인 전송(A→B→C) 성공
-- **보안 검사**: 이중 지불(Same Nullifier), 이미 사용된 노트, 존재하지 않는 노트 전송 시도 차단
-- 이벤트(NFTRegistered, NFTTransferred) 발생 여부 확인
+### 2. Hardhat Integration Tests (13)
+- NFT registration & duplicate registration rejection: Passed
+- Transfer via real ZK proofs & chain transfers (A→B→C): Successful
+- **Security Checks**: Double-spend (same nullifier), spent note usage, and non-existent note transfer attempts: Blocked
+- Event triggers (NFTRegistered, NFTTransferred): Verified
 
 ---
 
-## 🏃 시작하기
+## 🏃 Getting Started
 
-### 1. 의존성 설치
+### 1. Install Dependencies
 ```bash
 npm install
 cd frontend && npm install
 ```
 
-### 2. ZK 회로 컴파일
+### 2. Compile ZK Circuits
 ```bash
 npm run compile:circuits
 ```
 
-### 3. 스마트 컨트랙트 컴파일 및 테스트
+### 3. Compile Contracts & Run Tests
 ```bash
 npm run compile:contracts
 npm test
 ```
 
-### 4. 로컬 환경 실행
+### 4. Run Locally
 ```bash
-# 로컬 노드 실행
+# Run local node
 npm run node:local
-# 컨트랙트 배포
+# Deploy contracts
 npm run deploy:local
-# 프론트엔드 실행
+# Start frontend
 npm run dev:frontend
 ```
 
 ---
 
-## 🛡 주요 보안 로직
+## 🛡 Security Logic
 
-- **Note Hash**: `Poseidon(pkX, pkY, nftId, collectionAddress, salt)` 구조로 자산을 식별하여 암호학적 기밀성 유지.
-- **Zero-Knowledge Proof**: 송신자의 Private Key를 공개하지 않고도 해당 자산의 정당한 소유자임을 수학적으로 증명.
-- **Nullifier**: `ComputeNullifier(itemId, salt, sk)`를 통해 각 전송마다 유니크한 값을 생성, 온체인에서 기록하여 재사용 공격(Replay Attack) 방지.
+- **Note Hash**: Assets are identified using `Poseidon(pkX, pkY, nftId, collectionAddress, salt)` for cryptographic privacy.
+- **Zero-Knowledge Proof**: Mathematically proves legitimate ownership without revealing the sender's private key.
+- **Nullifier**: Generates a unique value for each transfer using `ComputeNullifier(itemId, salt, sk)`, recorded on-chain to prevent replay attacks.
+
+---
+
+## 🌐 Language
+- [Korean (한국어)](./README_KR.md)
