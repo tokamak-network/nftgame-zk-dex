@@ -1,0 +1,24 @@
+node_modules/
+.env
+
+# Hardhat
+typechain-types/
+
+# Circuits build output
+circuits/ptau/*.ptau
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Coverage
+coverage/
+coverage.json
