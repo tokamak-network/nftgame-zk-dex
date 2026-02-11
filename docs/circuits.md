@@ -1,0 +1,218 @@
+# ZK Circuit Architecture
+
+## Overview
+
+All circuits use the **Groth16** proof system on the **BN128** elliptic curve. Each circuit proves a specific property about private data without revealing it.
+
+### Shared Utilities
+
+| Circuit | Location | Purpose |
+|---------|----------|---------|
+| `ProofOfOwnership` | `utils/babyjubjub/proof_of_ownership.circom` | Proves sk matches pk on BabyJubJub |
+| `GetPubKey` | `utils/babyjubjub/get_pubkey.circom` | Derives pk = sk * Base8 |
+| `ComputeNullifier` | `utils/nullifier.circom` | Poseidon(itemId, salt, sk) |
+| `PoseidonNote` | `utils/poseidon/poseidon_note.circom` | 7-input Poseidon for note hashing |
+
+### Key Design Decisions
+
+- **Poseidon Hash**: Used instead of SHA256 for ~100x fewer constraints (~300 vs ~30,000 per hash).
+- **BabyJubJub Curve**: SNARK-friendly elliptic curve for key derivation and ownership proofs.
+- **ProofOfOwnership**: Uses `pk[2]` array (NOT separate pkX/pkY signals) — both `ProofOfOwnership` and `ProofOfOwnershipStrict` templates follow this pattern.
+- **No ternary operators**: Circom does not support `? :` syntax. Conditional logic uses `IsZero()` with arithmetic: `result <== (1 - flag) * value`.
+
+---
+
+## F1: Private NFT Transfer
+
+**File**: `circuits/main/private_nft_transfer.circom`
+
+### Purpose
+
+Privately transfer NFT ownership from one party to another, proving:
+1. Sender owns the old NFT note
+2. Old note hash matches the committed hash
+3. New note is correctly formed for the recipient
+4. Nullifier is correctly computed
+
+### Note Structure
+
+```
+NFT Note = Poseidon(pkX, pkY, nftId, collectionAddress, salt)
+         = Poseidon(5 inputs)
+```
+
+### Signal Specification
+
+#### Public Inputs (5)
+
+| # | Signal | Type | Description |
+|---|--------|------|-------------|
+| 0 | `oldNftHash` | field | Old NFT note commitment |
+| 1 | `newNftHash` | field | New NFT note commitment |
+| 2 | `nftId` | field | NFT token ID |
+| 3 | `collectionAddress` | field | NFT collection contract address |
+| 4 | `nullifier` | field | Nullifier for double-spend prevention |
+
+#### Private Inputs (7)
+
+| Signal | Description |
+|--------|-------------|
+| `oldOwnerPkX` | Old owner's BabyJubJub public key X |
+| `oldOwnerPkY` | Old owner's BabyJubJub public key Y |
+| `oldOwnerSk` | Old owner's secret key |
+| `oldSalt` | Salt of old note |
+| `newOwnerPkX` | New owner's BabyJubJub public key X |
+| `newOwnerPkY` | New owner's BabyJubJub public key Y |
+| `newSalt` | Salt of new note |
+
+### Constraint Analysis
+
+| Metric | Value |
+|--------|-------|
+| Non-linear constraints | 4,862 |
+| Linear constraints | 1,542 |
+| Total wires | ~6,400 |
+| Template instances | ~230 |
+
+### Circuit Flow
+
+```
+1. oldNft = Poseidon(oldOwnerPkX, oldOwnerPkY, nftId, collectionAddress, oldSalt)
+   → assert: oldNft.out === oldNftHash
+
+2. ownership = ProofOfOwnership(pk=[oldOwnerPkX, oldOwnerPkY], sk=oldOwnerSk)
+   → assert: ownership.valid === 1
+
+3. nullifierCalc = ComputeNullifier(nftId, oldSalt, oldOwnerSk)
+   → assert: nullifierCalc.out === nullifier
+
+4. newNft = Poseidon(newOwnerPkX, newOwnerPkY, nftId, collectionAddress, newSalt)
+   → assert: newNft.out === newNftHash
+```
+
+---
+
+## F5: Gaming Item Trade
+
+**File**: `circuits/main/gaming_item_trade.circom`
+
+### Purpose
+
+Privately trade gaming items between players with optional payment, proving:
+1. Seller owns the old item note
+2. Old item note hash matches the committed hash
+3. New item note preserves item identity (itemId, itemType, itemAttributes)
+4. Game ecosystem (gameId) is preserved
+5. Nullifier is correctly computed
+6. Payment note is correctly formed (if paid) or zero (if gift)
+
+### Note Structures
+
+```
+Item Note    = Poseidon(pkX, pkY, itemId, itemType, itemAttributes, gameId, salt)
+             = Poseidon(7 inputs)
+
+Payment Note = Poseidon(sellerPkX, sellerPkY, price, paymentToken, paymentSalt)
+             = Poseidon(5 inputs)
+```
+
+### Signal Specification
+
+#### Public Inputs (5)
+
+| # | Signal | Type | Description |
+|---|--------|------|-------------|
+| 0 | `oldItemHash` | field | Old item note commitment |
+| 1 | `newItemHash` | field | New item note commitment |
+| 2 | `paymentNoteHash` | field | Payment note commitment (0 for gifts) |
+| 3 | `gameId` | field | Game ecosystem identifier |
+| 4 | `nullifier` | field | Nullifier for double-spend prevention |
+
+#### Private Inputs (13)
+
+| Signal | Description |
+|--------|-------------|
+| `sellerPkX` | Seller's BabyJubJub public key X |
+| `sellerPkY` | Seller's BabyJubJub public key Y |
+| `sellerSk` | Seller's secret key |
+| `oldSalt` | Salt of old item note |
+| `buyerPkX` | Buyer's BabyJubJub public key X |
+| `buyerPkY` | Buyer's BabyJubJub public key Y |
+| `newSalt` | Salt of new item note |
+| `itemId` | Item token ID |
+| `itemType` | Item type (weapon, armor, etc.) |
+| `itemAttributes` | Encoded item stats/attributes |
+| `price` | Payment amount (0 = gift) |
+| `paymentToken` | Payment token type |
+| `paymentSalt` | Salt for payment note |
+
+### Constraint Analysis
+
+| Metric | Value |
+|--------|-------|
+| Non-linear constraints | 5,309 |
+| Linear constraints | 2,425 |
+| Total wires | 7,747 |
+| Template instances | 237 |
+
+### Circuit Flow
+
+```
+1. oldItem = Poseidon(sellerPkX, sellerPkY, itemId, itemType, itemAttributes, gameId, oldSalt)
+   → assert: oldItem.out === oldItemHash
+
+2. ownership = ProofOfOwnership(pk=[sellerPkX, sellerPkY], sk=sellerSk)
+   → assert: ownership.valid === 1
+
+3. nullifierCalc = ComputeNullifier(itemId, oldSalt, sellerSk)
+   → assert: nullifierCalc.out === nullifier
+
+4. newItem = Poseidon(buyerPkX, buyerPkY, itemId, itemType, itemAttributes, gameId, newSalt)
+   → assert: newItem.out === newItemHash
+
+5. paymentNote = Poseidon(sellerPkX, sellerPkY, price, paymentToken, paymentSalt)
+   isGift = IsZero(price)
+   expectedPaymentHash = (1 - isGift.out) * paymentNote.out
+   → assert: paymentNoteHash === expectedPaymentHash
+```
+
+### Payment Logic Detail
+
+The gift/paid branching uses arithmetic instead of conditionals:
+
+| Mode | price | isGift.out | expectedPaymentHash | paymentNoteHash must be |
+|------|-------|------------|---------------------|------------------------|
+| Gift | 0 | 1 | (1-1) * hash = 0 | 0 |
+| Paid | >0 | 0 | (1-0) * hash = hash | Poseidon(seller, price, token, salt) |
+
+---
+
+## Compilation Pipeline
+
+For each circuit, the build script (`scripts/compile-circuit.js`) executes:
+
+```
+circom <circuit>.circom --r1cs --wasm --sym -o build/
+   ↓
+snarkjs groth16 setup <circuit>.r1cs <ptau> <circuit>_0.zkey
+   ↓
+snarkjs zkey contribute <circuit>_0.zkey <circuit>.zkey
+   ↓
+snarkjs zkey export verificationkey <circuit>.zkey <circuit>_vkey.json
+   ↓
+snarkjs zkey export solidityverifier <circuit>.zkey <Name>Verifier.sol
+   ↓
+Copy wasm/zkey/vkey to frontend/public/circuits/
+```
+
+### Build Artifacts
+
+```
+circuits/build/<circuit_name>/
+├── <name>.r1cs              # Constraint system
+├── <name>.sym               # Symbol table
+├── <name>.zkey              # Proving key (~10-20 MB)
+├── <name>_vkey.json         # Verification key (~2 KB)
+└── <name>_js/
+    └── <name>.wasm          # Witness generator (~1-2 MB)
+```
