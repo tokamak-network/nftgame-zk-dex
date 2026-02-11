@@ -12,6 +12,7 @@
 | `GetPubKey` | `utils/babyjubjub/get_pubkey.circom` | pk = sk * Base8 유도 |
 | `ComputeNullifier` | `utils/nullifier.circom` | Poseidon(itemId, salt, sk) 계산 |
 | `PoseidonNote` | `utils/poseidon/poseidon_note.circom` | 노트 해싱을 위한 7-입력 Poseidon |
+| `PoseidonVRF` | `utils/vrf/poseidon_vrf.circom` | F4/F8을 위한 Poseidon(sk, seed) 기반 VRF |
 
 ### 주요 설계 결정
 
@@ -90,6 +91,129 @@ NFT 노트 = Poseidon(pkX, pkY, nftId, collectionAddress, salt)
 4. newNft = Poseidon(newOwnerPkX, newOwnerPkY, nftId, collectionAddress, newSalt)
    → assert: newNft.out === newNftHash
 ```
+
+---
+
+## F4: 루트 박스 개봉 (Loot Box Open)
+
+**파일**: `circuits/main/loot_box_open.circom`
+
+### 목적
+
+봉인된 루트 박스를 개봉하고 무작위 아이템 등급을 결정하며 다음을 증명합니다:
+1. 소유자가 봉인된 박스 노트를 보유하고 있음
+2. VRF 출력이 소유자의 비밀키로부터 올바르게 계산됨
+3. 등급(Rarity)이 VRF 출력과 임계값(Thresholds)에 따라 올바르게 결정됨
+4. 결과물 노트가 결정된 아이템과 함께 올바르게 형성됨
+5. 널리파이어가 중복 개봉을 방지함
+
+### 공유 유틸리티: PoseidonVRF
+
+**파일**: `circuits/utils/vrf/poseidon_vrf.circom`
+
+F4(루트 박스)와 F8(카드 뽑기)에서 재사용 가능한 경량 VRF 컴포넌트입니다:
+
+```
+PoseidonVRF(sk, seed) → Poseidon(sk, seed)
+```
+
+- **결정적**: 동일한 sk + seed는 항상 같은 출력을 생성
+- **예측 불가능**: sk 없이는 출력을 예측할 수 없음
+- **효율적**: 약 300개의 제약 조건 (단일 Poseidon 해시)
+
+### 노트 구조
+
+```
+박스 노트     = Poseidon(pkX, pkY, boxId, boxType, boxSalt)
+               = Poseidon(5개 입력)
+
+결과물 노트   = Poseidon(pkX, pkY, itemId, itemRarity, itemSalt)
+               = Poseidon(5개 입력)
+```
+
+### 신호 명세 (Signal Specification)
+
+#### 공개 입력 (Public Inputs - 5개)
+
+| # | 신호명 | 타입 | 설명 |
+|---|--------|------|-------------|
+| 0 | `boxCommitment` | field | 봉인된 박스 노트 커밋먼트 |
+| 1 | `outcomeCommitment` | field | 결과 아이템 노트 커밋먼트 |
+| 2 | `vrfOutput` | field | VRF 출력 (Poseidon(sk, nullifier)) |
+| 3 | `boxId` | field | 박스 식별자 |
+| 4 | `nullifier` | field | 중복 개봉 방지를 위한 널리파이어 |
+
+#### 비공개 입력 (Private Inputs - 12개)
+
+| 신호명 | 설명 |
+|--------|-------------|
+| `ownerPkX` | 소유자의 BabyJubJub 공개키 X |
+| `ownerPkY` | 소유자의 BabyJubJub 공개키 Y |
+| `ownerSk` | 소유자의 비밀키 |
+| `boxSalt` | 박스 노트의 솔트 |
+| `boxType` | 박스 타입 식별자 |
+| `itemId` | 결과 아이템 ID |
+| `itemRarity` | 주장하는 희귀도 등급 (0-3) |
+| `itemSalt` | 결과물 노트를 위한 솔트 |
+| `rarityThresholds[4]` | 누적 확률 임계값 |
+
+### 제약 조건 분석
+
+| 메트릭 | 수치 |
+|--------|-------|
+| 비선형 제약 조건 | 5,491 |
+| 선형 제약 조건 | 1,855 |
+| 전체 와이어 | ~7,300 |
+| 템플릿 인스턴스 | 234 |
+
+### 회로 흐름
+
+```
+1. boxNote = Poseidon(ownerPkX, ownerPkY, boxId, boxType, boxSalt)
+   → assert: boxNote.out === boxCommitment
+
+2. ownership = ProofOfOwnership(pk=[ownerPkX, ownerPkY], sk=ownerSk)
+   → assert: ownership.valid === 1
+
+3. nullifierCalc = ComputeNullifier(boxId, boxSalt, ownerSk)
+   → assert: nullifierCalc.out === nullifier
+
+4. vrf = PoseidonVRF(sk=ownerSk, seed=nullifier)
+   → assert: vrf.out === vrfOutput
+
+5. 등급 결정 (Rarity Determination):
+   lower14bits = vrfOutput & 0x3FFF  (Num2Bits(254) → Bits2Num(14) 사용)
+   vrfMod = lower14bits % 10000      (몫이 0 또는 1임을 보장)
+   각 등급 i에 대해: isBelow[i] = LessThan(vrfMod < thresholds[i])
+   matched[i] = isBelow[i] AND NOT isBelow[i-1]
+   → assert: matched[itemRarity] === 1
+
+6. 임계값 유효성:
+   → assert: 임계값이 단조 증가함 (monotonically increasing)
+   → assert: thresholds[3] === 10000
+
+7. outcomeNote = Poseidon(ownerPkX, ownerPkY, itemId, itemRarity, itemSalt)
+   → assert: outcomeNote.out === outcomeCommitment
+```
+
+### 희귀도 로직 상세
+
+14비트 추출을 통해 안전한 필드 산술 연산을 보장합니다:
+
+| 단계 | 연산 | 범위 |
+|------|-----------|-------|
+| 추출 | `vrfOutput & 0x3FFF` | 0–16383 |
+| 나머지 | `lower14bits % 10000` | 0–9999 |
+| 몫 | 0 또는 1 (필드 연산에 안전) | 0–1 |
+
+기본 임계값 예시:
+
+| 등급 | 희귀도 | 임계값 | 확률 |
+|------|--------|-----------|-------------|
+| 0 | Legendary | 100 | 1% |
+| 1 | Epic | 500 | 4% |
+| 2 | Rare | 2000 | 15% |
+| 3 | Common | 10000 | 80% |
 
 ---
 

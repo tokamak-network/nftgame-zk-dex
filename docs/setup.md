@@ -108,6 +108,9 @@ Each circuit must be compiled separately. The compilation pipeline:
 # F1: Private NFT Transfer
 node scripts/compile-circuit.js private_nft_transfer
 
+# F4: Loot Box Open
+node scripts/compile-circuit.js loot_box_open
+
 # F5: Gaming Item Trade
 node scripts/compile-circuit.js gaming_item_trade
 ```
@@ -131,6 +134,7 @@ Additionally, a Solidity verifier is generated at `contracts/verifiers/<Name>Ver
 | Circuit | Constraints | Approx. Time |
 |---------|-------------|--------------|
 | private_nft_transfer | ~6,400 | ~2 min |
+| loot_box_open | ~7,300 | ~2 min |
 | gaming_item_trade | ~7,700 | ~2 min |
 
 > Most of the time is spent on the Groth16 setup (zkey generation), not the circom compilation itself.
@@ -151,7 +155,7 @@ forge build
 
 Both compile all Solidity contracts including the generated Groth16 verifiers.
 
-> **Note**: Two Groth16Verifier contracts exist (one per circuit). Hardhat handles this via fully qualified names like `contracts/verifiers/GamingItemTradeVerifier.sol:Groth16Verifier`.
+> **Note**: Three Groth16Verifier contracts exist (one per circuit). Hardhat handles this via fully qualified names like `contracts/verifiers/LootBoxOpenVerifier.sol:Groth16Verifier`.
 
 ---
 

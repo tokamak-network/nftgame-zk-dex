@@ -25,6 +25,7 @@ Before running tests, ensure:
 3. **Circuits compiled** (for circuit unit and integration tests):
    ```bash
    node scripts/compile-circuit.js private_nft_transfer
+   node scripts/compile-circuit.js loot_box_open
    node scripts/compile-circuit.js gaming_item_trade
    ```
 4. **Contracts compiled**: `npx hardhat compile`
@@ -67,6 +68,22 @@ forge test --match-contract PrivateNFTTest
 
 # Integration tests - real ZK proofs (9 tests)
 npx hardhat test test/PrivateNFT.integration.test.js
+```
+
+#### F4: Loot Box Open
+
+```bash
+# Circuit unit tests (15 tests)
+npx mocha test/circuits/loot-box-open.test.js --timeout 120000
+
+# Contract unit tests - Hardhat mock verifier (9 tests)
+npx hardhat test test/LootBoxOpen.test.js
+
+# Contract unit tests - Foundry (15 tests including fuzz)
+forge test --match-contract LootBoxOpenTest
+
+# Integration tests - real ZK proofs (9 tests)
+npx hardhat test test/LootBoxOpen.integration.test.js
 ```
 
 #### F5: Gaming Item Trade
@@ -148,6 +165,78 @@ npx hardhat test test/GamingItemTrade.integration.test.js
 | Reject duplicate note hash | Note hash uniqueness |
 | Emit NFTRegistered event | Event emission |
 | Emit NFTTransferred event | Event emission |
+
+---
+
+### F4: Loot Box Open (33 Hardhat/Mocha + 15 Foundry)
+
+#### Circuit Unit Tests (`test/circuits/loot-box-open.test.js`)
+
+| Test | Category | What it verifies |
+|------|----------|-----------------|
+| Valid loot box open proof | Happy path | Complete proof lifecycle |
+| Correct public signals order | Happy path | 5 signals: boxCommitment, outcomeCommitment, vrfOutput, boxId, nullifier |
+| Different box types produce different proofs | Happy path | Box type differentiation |
+| Same owner different boxes produce different VRF | Happy path | VRF uniqueness per box |
+| Wrong secret key | Security | Ownership validation |
+| Wrong boxId | Security | Box identity preservation |
+| Wrong nullifier | Security | Nullifier computation |
+| Wrong vrfOutput | Security | VRF correctness |
+| Wrong itemRarity | Security | Rarity determination |
+| Wrong outcomeCommitment | Security | Outcome note integrity |
+| Invalid thresholds (not ordered) | Security | Threshold monotonicity |
+| Invalid last threshold (not 10000) | Security | Threshold validity |
+| Tampered public signal (boxCommitment) | Security | Proof-signal binding |
+| Tampered public signal (vrfOutput) | Security | Proof-signal binding |
+| Tampered public signal (nullifier) | Security | Proof-signal binding |
+
+#### Contract Unit Tests (`test/LootBoxOpen.test.js`)
+
+| Test | What it verifies |
+|------|-----------------|
+| Register a new box note | Basic note creation with boxId |
+| Reject duplicate box registration | Registration uniqueness |
+| Reject duplicate note hash | Note hash uniqueness |
+| Emit BoxRegistered event | Event emission with correct args |
+| Open box with valid proof (mock) | Open flow with mock verifier |
+| Reject double-open (same nullifier) | Double-open prevention |
+| Reject opening already-spent box | Note state management |
+| Reject opening non-existent box | Note existence check |
+| Emit BoxOpened event | Event emission with correct args |
+
+#### Foundry Tests (`test/foundry/LootBoxOpen.t.sol`)
+
+| Test | Category | What it verifies |
+|------|----------|-----------------|
+| test_RegisterBox | Happy path | Basic box note creation |
+| test_RegisterBox_EmitsEvent | Events | BoxRegistered event with correct args |
+| test_RegisterBox_EmitsNoteCreated | Events | NoteCreated event from base contract |
+| test_RevertWhen_DuplicateBoxRegistration | Security | Same boxId rejected |
+| test_RevertWhen_DuplicateNoteHash | Security | Same noteHash rejected |
+| testFuzz_RegisterBox | Fuzz (256 runs) | Random noteHash/boxId registration |
+| test_OpenBox | Happy path | Full open flow with state changes |
+| test_OpenBox_EmitsEvents | Events | NoteSpent + NoteCreated + BoxOpened |
+| test_OpenMultipleBoxes | Happy path | Multiple boxes opened sequentially |
+| test_RevertWhen_DoubleOpen | Security | Same nullifier reuse blocked |
+| test_RevertWhen_SpentBox | Security | Already-spent box rejected |
+| test_RevertWhen_NonExistentBox | Security | Non-existent box rejected |
+| test_GetNoteState_Invalid | View | Default state is Invalid (0) |
+| test_IsNullifierUsed_False | View | Default nullifier is unused |
+| testFuzz_OpenBox | Fuzz (256 runs) | Random hashes/nullifier full open flow |
+
+#### Integration Tests (`test/LootBoxOpen.integration.test.js`)
+
+| Test | What it verifies |
+|------|-----------------|
+| Register and open box with real ZK proof | Full pipeline end-to-end |
+| Open box with different box type | Box type parameter support |
+| Open multiple boxes from same owner | Multi-box ownership |
+| Reject double-open (same nullifier) | On-chain nullifier tracking |
+| Reject opening already-spent box | Note state management |
+| Reject duplicate box registration | Registration uniqueness |
+| Reject duplicate note hash | Note hash uniqueness |
+| Emit BoxRegistered event | Event emission |
+| Emit BoxOpened event | Event emission |
 
 ---
 
@@ -255,6 +344,7 @@ forge test --gas-report
 
 # Specific contract
 forge test --match-contract PrivateNFTTest
+forge test --match-contract LootBoxOpenTest
 forge test --match-contract GamingItemTradeTest
 
 # Specific test
@@ -271,6 +361,8 @@ Fuzz tests use `vm.assume()` to filter invalid inputs and run 256 iterations by 
 | Test | Contract | Fuzz Parameters | What it validates |
 |------|----------|-----------------|-------------------|
 | `testFuzz_RegisterNFT` | PrivateNFT | noteHash, nftId | Registration works for any valid inputs |
+| `testFuzz_RegisterBox` | LootBoxOpen | noteHash, boxId | Registration works for any valid inputs |
+| `testFuzz_OpenBox` | LootBoxOpen | boxHash, outcomeHash, vrfOutput, nullifier, boxId | Full open flow with random values |
 | `testFuzz_RegisterItem` | GamingItemTrade | noteHash, gameId, itemId | Registration works for any valid inputs |
 | `testFuzz_TradeItem` | GamingItemTrade | oldHash, newHash, paymentHash, nullifier, itemId | Full trade flow with random values |
 
@@ -289,6 +381,7 @@ The circuit unit tests and integration tests require compiled circuit artifacts.
 Run the circuit compilation:
 ```bash
 node scripts/compile-circuit.js private_nft_transfer
+node scripts/compile-circuit.js loot_box_open
 node scripts/compile-circuit.js gaming_item_trade
 ```
 
@@ -306,13 +399,13 @@ Circuit proof generation can be slow. Increase the timeout:
 npx mocha test/circuits/ --timeout 300000
 ```
 
-### Two Groth16Verifier contracts
+### Three Groth16Verifier contracts
 
-Both F1 and F5 generate a Solidity verifier named `Groth16Verifier`. Hardhat handles this with fully qualified names. In code:
+F1, F4, and F5 each generate a Solidity verifier named `Groth16Verifier`. Hardhat handles this with fully qualified names. In code:
 ```javascript
 // Use fully qualified path to avoid ambiguity
 const Verifier = await ethers.getContractFactory(
-  "contracts/verifiers/GamingItemTradeVerifier.sol:Groth16Verifier"
+  "contracts/verifiers/LootBoxOpenVerifier.sol:Groth16Verifier"
 );
 ```
 

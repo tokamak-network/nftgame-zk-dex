@@ -12,6 +12,7 @@ All circuits use the **Groth16** proof system on the **BN128** elliptic curve. E
 | `GetPubKey` | `utils/babyjubjub/get_pubkey.circom` | Derives pk = sk * Base8 |
 | `ComputeNullifier` | `utils/nullifier.circom` | Poseidon(itemId, salt, sk) |
 | `PoseidonNote` | `utils/poseidon/poseidon_note.circom` | 7-input Poseidon for note hashing |
+| `PoseidonVRF` | `utils/vrf/poseidon_vrf.circom` | Poseidon(sk, seed) VRF for F4/F8 |
 
 ### Key Design Decisions
 
@@ -89,6 +90,129 @@ NFT Note = Poseidon(pkX, pkY, nftId, collectionAddress, salt)
 4. newNft = Poseidon(newOwnerPkX, newOwnerPkY, nftId, collectionAddress, newSalt)
    → assert: newNft.out === newNftHash
 ```
+
+---
+
+## F4: Loot Box Open
+
+**File**: `circuits/main/loot_box_open.circom`
+
+### Purpose
+
+Open a sealed loot box and determine a random item rarity, proving:
+1. Owner holds the sealed box note
+2. VRF output is correctly computed from owner's secret key
+3. Rarity tier is correctly determined from VRF output and thresholds
+4. Outcome note is correctly formed with the determined item
+5. Nullifier prevents double-opening
+
+### Shared Utility: PoseidonVRF
+
+**File**: `circuits/utils/vrf/poseidon_vrf.circom`
+
+A lightweight VRF component reusable by F4 (loot box) and F8 (card draw):
+
+```
+PoseidonVRF(sk, seed) → Poseidon(sk, seed)
+```
+
+- **Deterministic**: Same sk + seed always produces the same output
+- **Unpredictable**: Without sk, output cannot be predicted
+- **Efficient**: ~300 constraints (single Poseidon hash)
+
+### Note Structures
+
+```
+Box Note     = Poseidon(pkX, pkY, boxId, boxType, boxSalt)
+             = Poseidon(5 inputs)
+
+Outcome Note = Poseidon(pkX, pkY, itemId, itemRarity, itemSalt)
+             = Poseidon(5 inputs)
+```
+
+### Signal Specification
+
+#### Public Inputs (5)
+
+| # | Signal | Type | Description |
+|---|--------|------|-------------|
+| 0 | `boxCommitment` | field | Sealed box note commitment |
+| 1 | `outcomeCommitment` | field | Outcome item note commitment |
+| 2 | `vrfOutput` | field | VRF output (Poseidon(sk, nullifier)) |
+| 3 | `boxId` | field | Box identifier |
+| 4 | `nullifier` | field | Nullifier for double-open prevention |
+
+#### Private Inputs (12)
+
+| Signal | Description |
+|--------|-------------|
+| `ownerPkX` | Owner's BabyJubJub public key X |
+| `ownerPkY` | Owner's BabyJubJub public key Y |
+| `ownerSk` | Owner's secret key |
+| `boxSalt` | Salt of box note |
+| `boxType` | Box type identifier |
+| `itemId` | Resulting item ID |
+| `itemRarity` | Claimed rarity tier (0-3) |
+| `itemSalt` | Salt for outcome note |
+| `rarityThresholds[4]` | Cumulative probability thresholds |
+
+### Constraint Analysis
+
+| Metric | Value |
+|--------|-------|
+| Non-linear constraints | 5,491 |
+| Linear constraints | 1,855 |
+| Total wires | ~7,300 |
+| Template instances | 234 |
+
+### Circuit Flow
+
+```
+1. boxNote = Poseidon(ownerPkX, ownerPkY, boxId, boxType, boxSalt)
+   → assert: boxNote.out === boxCommitment
+
+2. ownership = ProofOfOwnership(pk=[ownerPkX, ownerPkY], sk=ownerSk)
+   → assert: ownership.valid === 1
+
+3. nullifierCalc = ComputeNullifier(boxId, boxSalt, ownerSk)
+   → assert: nullifierCalc.out === nullifier
+
+4. vrf = PoseidonVRF(sk=ownerSk, seed=nullifier)
+   → assert: vrf.out === vrfOutput
+
+5. Rarity Determination:
+   lower14bits = vrfOutput & 0x3FFF  (via Num2Bits(254) → Bits2Num(14))
+   vrfMod = lower14bits % 10000      (quotient guaranteed 0 or 1)
+   for each tier i: isBelow[i] = LessThan(vrfMod < thresholds[i])
+   matched[i] = isBelow[i] AND NOT isBelow[i-1]
+   → assert: matched[itemRarity] === 1
+
+6. Threshold Validity:
+   → assert: thresholds are monotonically increasing
+   → assert: thresholds[3] === 10000
+
+7. outcomeNote = Poseidon(ownerPkX, ownerPkY, itemId, itemRarity, itemSalt)
+   → assert: outcomeNote.out === outcomeCommitment
+```
+
+### Rarity Logic Detail
+
+The 14-bit extraction ensures safe field arithmetic:
+
+| Step | Operation | Range |
+|------|-----------|-------|
+| Extract | `vrfOutput & 0x3FFF` | 0–16383 |
+| Modulo | `lower14bits % 10000` | 0–9999 |
+| Quotient | 0 or 1 (safe for field arithmetic) | 0–1 |
+
+Default thresholds (example):
+
+| Tier | Rarity | Threshold | Probability |
+|------|--------|-----------|-------------|
+| 0 | Legendary | 100 | 1% |
+| 1 | Epic | 500 | 4% |
+| 2 | Rare | 2000 | 15% |
+| 3 | Common | 10000 | 80% |
 
 ---
 

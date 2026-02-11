@@ -11,6 +11,7 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 | 기능 | 설명 | 상태 |
 |------|------|------|
 | **F1: Private NFT Transfer** | UTXO 스타일 노트를 활용한 비공개 NFT 소유권 이전 | 완료 |
+| **F4: Loot Box Open** | Poseidon VRF 기반 검증 가능한 랜덤 루트 박스 개봉 | 완료 |
 | **F5: Gaming Item Trade** | 결제 지원 및 게임 생태계 격리가 포함된 P2P 게임 아이템 거래 | 완료 |
 | **F8: Card Draw** | 검증 가능한 랜덤 카드 뽑기 시스템 | 예정 |
 
@@ -19,6 +20,12 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 - **온체인 검증**: Groth16 증명을 통해 온체인에서 전송의 유효성을 즉시 검증.
 - **이중 지불 방지**: 널리파이어(Nullifier) 메커니즘을 적용하여 동일 자산의 중복 사용 차단.
 - **데이터 보안**: ECDH 암호화를 통해 수신자만 자신의 자산 데이터를 복호화 가능.
+
+### F4: 루트 박스 개봉
+- **검증 가능한 랜덤성**: Poseidon 기반 VRF로 예측 불가능하고 결정론적인 결과 생성.
+- **공정성 증명**: VRF 출력과 커밋된 확률 임계값으로 희귀도 등급 결정.
+- **단일 개봉**: 널리파이어 메커니즘으로 박스 중복 개봉 방지.
+- **재사용 가능한 VRF**: F8 카드 셔플 통합을 위한 공용 `PoseidonVRF` 컴포넌트.
 
 ### F5: 게이밍 아이템 거래
 - **비공개 아이템 거래**: 7-입력 Poseidon 노트 커밋먼트로 아이템 속성을 보존하며 거래.
@@ -45,9 +52,11 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 ├── circuits/
 │   ├── main/                  # 메인 회로 파일
 │   │   ├── private_nft_transfer.circom   # F1 회로
+│   │   ├── loot_box_open.circom         # F4 회로
 │   │   └── gaming_item_trade.circom      # F5 회로
 │   ├── utils/                 # 공용 유틸리티 회로
 │   │   ├── babyjubjub/        # 소유권 증명, 키 파생
+│   │   ├── vrf/               # Poseidon 기반 VRF (F4/F8 공용)
 │   │   ├── nullifier.circom   # 널리파이어 계산
 │   │   └── poseidon/          # Poseidon 노트 해싱
 │   ├── build/                 # 컴파일된 회로 산출물 (r1cs, wasm, zkey)
@@ -55,6 +64,7 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 ├── contracts/
 │   ├── NFTNoteBase.sol        # 노트/널리파이어 관리 베이스 컨트랙트
 │   ├── PrivateNFT.sol         # F1 메인 컨트랙트
+│   ├── LootBoxOpen.sol        # F4 메인 컨트랙트
 │   ├── GamingItemTrade.sol    # F5 메인 컨트랙트
 │   ├── verifiers/             # Groth16 검증자 컨트랙트 + 인터페이스
 │   └── test/                  # 단위 테스트용 Mock 검증자
@@ -62,6 +72,8 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 │   ├── circuits/              # 회로 수준 단위 테스트 (snarkjs, 블록체인 없음)
 │   ├── PrivateNFT.test.js             # F1 컨트랙트 단위 테스트
 │   ├── PrivateNFT.integration.test.js # F1 통합 테스트 (실제 ZK 증명)
+│   ├── LootBoxOpen.test.js                  # F4 컨트랙트 단위 테스트
+│   ├── LootBoxOpen.integration.test.js      # F4 통합 테스트 (실제 ZK 증명)
 │   ├── GamingItemTrade.test.js             # F5 컨트랙트 단위 테스트
 │   └── GamingItemTrade.integration.test.js # F5 통합 테스트 (실제 ZK 증명)
 ├── scripts/
@@ -78,7 +90,7 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 
 ---
 
-## 테스트 현황 (85/85 통과)
+## 테스트 현황 (124/124 통과)
 
 모든 핵심 기능에 대한 테스트가 3개 프레임워크에 걸쳐 완료되어 안정성을 확보했습니다.
 
@@ -90,6 +102,15 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 | 컨트랙트 단위 - Hardhat (Mock) | 4 | 등록, 중복 거부, Mock 검증자 전송, 널리파이어 재사용 |
 | 컨트랙트 단위 - Foundry (Mock + Fuzz) | 14 | 등록, 전송, 체인전송, revert, 이벤트, fuzz (256회) |
 | 통합 (실제 ZK) | 9 | 실제 증명 전송, 체인 전송 A->B->C, 이중 지불, 이벤트 발생 |
+
+### F4: 루트 박스 개봉 (39개 테스트)
+
+| 카테고리 | 테스트 수 | 내용 |
+|----------|-----------|------|
+| 회로 단위 (Mocha) | 15 | 유효한 개봉, 다른 박스 타입, VRF 유일성, 잘못된 sk/boxId/nullifier/vrfOutput/rarity/thresholds, 변조 |
+| 컨트랙트 단위 - Hardhat (Mock) | 9 | 등록, 중복, Mock 검증자 개봉, 이중 개봉, 이벤트 |
+| 컨트랙트 단위 - Foundry (Mock + Fuzz) | 15 | 등록, 개봉, 다중 박스, revert, 이벤트, fuzz (256회) |
+| 통합 (실제 ZK) | 9 | 실제 증명 개봉, 다른 박스 타입, 다중 박스, 이중 개봉, 이벤트 발생 |
 
 ### F5: 게이밍 아이템 거래 (47개 테스트)
 
@@ -110,6 +131,7 @@ npm install
 
 # 2. ZK 회로 컴파일 (circom 설치 필요)
 node scripts/compile-circuit.js private_nft_transfer
+node scripts/compile-circuit.js loot_box_open
 node scripts/compile-circuit.js gaming_item_trade
 
 # 3. 스마트 컨트랙트 컴파일
@@ -132,12 +154,15 @@ forge test
 | 기능 | 노트 해시 | 입력 수 |
 |------|-----------|---------|
 | F1 (NFT) | `Poseidon(pkX, pkY, nftId, collectionAddress, salt)` | 5 |
+| F4 (박스) | `Poseidon(pkX, pkY, boxId, boxType, boxSalt)` | 5 |
+| F4 (결과) | `Poseidon(pkX, pkY, itemId, itemRarity, itemSalt)` | 5 |
 | F5 (아이템) | `Poseidon(pkX, pkY, itemId, itemType, itemAttributes, gameId, salt)` | 7 |
 | F5 (결제) | `Poseidon(sellerPkX, sellerPkY, price, paymentToken, paymentSalt)` | 5 |
 
 ### 핵심 메커니즘
 - **영지식 증명**: 송신자의 Private Key를 공개하지 않고도 해당 자산의 정당한 소유자임을 수학적으로 증명.
 - **널리파이어**: `Poseidon(itemId, salt, sk)`를 통해 각 전송마다 유니크한 값을 생성, 온체인에서 기록하여 재사용 공격 방지.
+- **Poseidon VRF**: `Poseidon(sk, seed)`로 결정론적이면서 예측 불가능한 랜덤성 제공 (루트 박스).
 - **게임 격리**: F5 아이템은 `gameId`에 바인딩되어 게임 간 아이템 유출 방지.
 
 ---
