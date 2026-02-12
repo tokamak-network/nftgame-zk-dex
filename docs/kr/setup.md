@@ -90,7 +90,7 @@ wget https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_22.ptau
 cd ../..
 ```
 
-> **참고**: Power 22는 최대 2^22 = 약 400만 개의 제약 조건(constraints)을 지원합니다. 가장 큰 회로(F5)가 약 7,700개의 제약 조건을 사용하므로 이는 매우 충분한 크기입니다.
+> **참고**: Power 22는 최대 2^22 = 약 400만 개의 제약 조건(constraints)을 지원합니다. 가장 큰 회로(F8: 카드 뽑기)가 약 99,400개의 제약 조건을 사용하므로 이는 매우 충분한 크기입니다.
 
 ---
 
@@ -113,6 +113,9 @@ node scripts/compile-circuit.js loot_box_open
 
 # F5: 게임 아이템 거래
 node scripts/compile-circuit.js gaming_item_trade
+
+# F8: 카드 뽑기 검증 (9.9만 개의 제약 조건으로 인해 약 5-10분 소요)
+node scripts/compile-circuit.js card_draw
 ```
 
 ### 컴파일 결과물
@@ -136,6 +139,7 @@ node scripts/compile-circuit.js gaming_item_trade
 | private_nft_transfer | ~6,400 | ~2분 |
 | loot_box_open | ~7,300 | ~2분 |
 | gaming_item_trade | ~7,700 | ~2분 |
+| card_draw | ~99,400 | ~5-10분 |
 
 > 대부분의 시간은 circom 컴파일 자체가 아니라 Groth16 설정(zkey 생성)에서 소요됩니다.
 
@@ -155,7 +159,7 @@ forge build
 
 두 도구 모두 생성된 Groth16 검증기를 포함한 모든 솔리디티 컨트랙트를 컴파일합니다.
 
-> **참고**: 세 개의 Groth16Verifier 컨트랙트가 존재합니다(회로당 하나). Hardhat은 `contracts/verifiers/LootBoxOpenVerifier.sol:Groth16Verifier`와 같이 정규화된 이름을 통해 이를 처리합니다.
+> **참고**: 네 개의 Groth16Verifier 컨트랙트가 존재합니다(회로당 하나). Hardhat은 `contracts/verifiers/CardDrawVerifier.sol:Groth16Verifier`와 같이 정규화된 이름을 통해 이를 처리합니다.
 
 ---
 

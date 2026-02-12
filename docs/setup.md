@@ -90,7 +90,7 @@ wget https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_22.ptau
 cd ../..
 ```
 
-> **Note**: Power 22 supports circuits up to 2^22 = ~4M constraints. Our largest circuit (F5) uses ~7,700 constraints, so this is more than sufficient.
+> **Note**: Power 22 supports circuits up to 2^22 = ~4M constraints. Our largest circuit (F8: Card Draw) uses ~99,400 constraints, so this is more than sufficient.
 
 ---
 
@@ -113,6 +113,9 @@ node scripts/compile-circuit.js loot_box_open
 
 # F5: Gaming Item Trade
 node scripts/compile-circuit.js gaming_item_trade
+
+# F8: Card Draw Verify (~5-10 min due to 99K constraints)
+node scripts/compile-circuit.js card_draw
 ```
 
 ### Compile Output
@@ -136,6 +139,7 @@ Additionally, a Solidity verifier is generated at `contracts/verifiers/<Name>Ver
 | private_nft_transfer | ~6,400 | ~2 min |
 | loot_box_open | ~7,300 | ~2 min |
 | gaming_item_trade | ~7,700 | ~2 min |
+| card_draw | ~99,400 | ~5-10 min |
 
 > Most of the time is spent on the Groth16 setup (zkey generation), not the circom compilation itself.
 
@@ -155,7 +159,7 @@ forge build
 
 Both compile all Solidity contracts including the generated Groth16 verifiers.
 
-> **Note**: Three Groth16Verifier contracts exist (one per circuit). Hardhat handles this via fully qualified names like `contracts/verifiers/LootBoxOpenVerifier.sol:Groth16Verifier`.
+> **Note**: Four Groth16Verifier contracts exist (one per circuit). Hardhat handles this via fully qualified names like `contracts/verifiers/CardDrawVerifier.sol:Groth16Verifier`.
 
 ---
 

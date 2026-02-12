@@ -13,7 +13,7 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 | **F1: Private NFT Transfer** | UTXO 스타일 노트를 활용한 비공개 NFT 소유권 이전 | 완료 |
 | **F4: Loot Box Open** | Poseidon VRF 기반 검증 가능한 랜덤 루트 박스 개봉 | 완료 |
 | **F5: Gaming Item Trade** | 결제 지원 및 게임 생태계 격리가 포함된 P2P 게임 아이템 거래 | 완료 |
-| **F8: Card Draw** | 검증 가능한 랜덤 카드 뽑기 시스템 | 예정 |
+| **F8: Card Draw** | 전체 Fisher-Yates 셔플을 포함한 검증 가능한 카드 뽑기 | 완료 |
 
 ### F1: 비공개 NFT 전송
 - **비공개 NFT 전송**: UTXO 스타일의 '노트(Note)' 시스템을 활용하여 NFT 소유권 이전.
@@ -32,6 +32,13 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 - **결제 지원**: 유료 거래와 무료 선물(price=0) 모두 지원.
 - **게임 생태계 격리**: `gameId` 바인딩으로 서로 다른 게임 간 아이템 이동 차단.
 - **속성 보존**: `itemType`과 `itemAttributes`가 거래 간에 암호학적으로 보존됨을 보장.
+
+### F8: 카드 뽑기 검증 (Card Draw Verify)
+- **전체 셔플 검증**: 52장 카드 덱의 Fisher-Yates 셔플을 ZK 회로 내에서 전체 검증 (~99K 제약조건).
+- **영속적 덱 (Persistent Deck)**: 드로우 시 덱 커밋먼트가 소모되지 않으며, 하나의 덱에서 여러 장의 카드 드로우 가능.
+- **DrawIndex 추적**: 중복 드로우 방지를 위해 널리파이어 대신 온체인 `drawIndex` 매핑 사용.
+- **숨겨진 카드**: 52장의 모든 덱 카드와 드로우된 카드는 비공개 입력이며, 커밋먼트만 외부에 공개됨.
+- **결정론적 랜덤성**: Poseidon 기반 PRNG를 사용하여 비공개 시드로부터 셔플 랜덤성 생성.
 
 ---
 
@@ -53,12 +60,15 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 │   ├── main/                  # 메인 회로 파일
 │   │   ├── private_nft_transfer.circom   # F1 회로
 │   │   ├── loot_box_open.circom         # F4 회로
-│   │   └── gaming_item_trade.circom      # F5 회로
+│   │   ├── gaming_item_trade.circom      # F5 회로
+│   │   └── card_draw.circom              # F8 회로
 │   ├── utils/                 # 공용 유틸리티 회로
 │   │   ├── babyjubjub/        # 소유권 증명, 키 파생
 │   │   ├── vrf/               # Poseidon 기반 VRF (F4/F8 공용)
+│   │   ├── array/             # ArrayRead (가변 인덱스 접근)
+│   │   ├── shuffle/           # Fisher-Yates 셔플 검증
 │   │   ├── nullifier.circom   # 널리파이어 계산
-│   │   └── poseidon/          # Poseidon 노트 해싱
+│   │   └── poseidon/          # Poseidon 노트 해싱, 덱 커밋먼트
 │   ├── build/                 # 컴파일된 회로 산출물 (r1cs, wasm, zkey)
 │   └── ptau/                  # Powers of Tau 세레모니 파일
 ├── contracts/
@@ -66,6 +76,7 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 │   ├── PrivateNFT.sol         # F1 메인 컨트랙트
 │   ├── LootBoxOpen.sol        # F4 메인 컨트랙트
 │   ├── GamingItemTrade.sol    # F5 메인 컨트랙트
+│   ├── CardDraw.sol           # F8 메인 컨트랙트
 │   ├── verifiers/             # Groth16 검증자 컨트랙트 + 인터페이스
 │   └── test/                  # 단위 테스트용 Mock 검증자
 ├── test/
@@ -75,7 +86,9 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 │   ├── LootBoxOpen.test.js                  # F4 컨트랙트 단위 테스트
 │   ├── LootBoxOpen.integration.test.js      # F4 통합 테스트 (실제 ZK 증명)
 │   ├── GamingItemTrade.test.js             # F5 컨트랙트 단위 테스트
-│   └── GamingItemTrade.integration.test.js # F5 통합 테스트 (실제 ZK 증명)
+│   ├── GamingItemTrade.integration.test.js # F5 통합 테스트 (실제 ZK 증명)
+│   ├── CardDraw.test.js                   # F8 컨트랙트 단위 테스트
+│   └── CardDraw.integration.test.js       # F8 통합 테스트 (실제 ZK 증명)
 ├── scripts/
 │   ├── compile-circuit.js     # 회로 컴파일 파이프라인
 │   └── lib/                   # JS 암호화 유틸리티
@@ -90,7 +103,7 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 
 ---
 
-## 테스트 현황 (124/124 통과)
+## 테스트 현황 (170/170 통과)
 
 모든 핵심 기능에 대한 테스트가 3개 프레임워크에 걸쳐 완료되어 안정성을 확보했습니다.
 
@@ -121,6 +134,15 @@ ZK-SNARKs 기반의 **기밀성 보장형 NFT 게이밍 DEX** 프로젝트입니
 | 컨트랙트 단위 - Foundry (Mock + Fuzz) | 17 | 등록, 유료/선물 거래, 체인거래, 게임 격리, revert, 이벤트, fuzz (256회) |
 | 통합 (실제 ZK) | 9 | 실제 증명 유료/선물 거래, 체인 거래 A->B->C, 이중 지불, 이벤트 발생 |
 
+### F8: 카드 뽑기 검증 (46개 테스트)
+
+| 카테고리 | 테스트 수 | 내용 |
+|----------|-----------|------|
+| 회로 단위 (Mocha) | 14 | 유효한 드로우, 다른 인덱스, 다른 시드, 잘못된 sk/seed/card/index/gameId/커밋먼트, 변조 |
+| 컨트랙트 단위 - Hardhat (Mock) | 9 | 등록, 중복 가입, Mock 검증자 드로우, 다중 드로우, 이벤트 |
+| 컨트랙트 단위 - Foundry (Mock + Fuzz) | 15 | 등록, 드로우, 다중 드로우, revert, 이벤트, fuzz (256회) |
+| 통합 (실제 ZK) | 8 | 실제 증명 드로우, 다른 인덱스, 동일 덱 다중 드로우, 중복 드로우 거부, 이벤트 |
+
 ---
 
 ## 빠른 시작
@@ -133,6 +155,7 @@ npm install
 node scripts/compile-circuit.js private_nft_transfer
 node scripts/compile-circuit.js loot_box_open
 node scripts/compile-circuit.js gaming_item_trade
+node scripts/compile-circuit.js card_draw    # ~5-10분 소요
 
 # 3. 스마트 컨트랙트 컴파일
 npx hardhat compile
@@ -158,12 +181,17 @@ forge test
 | F4 (결과) | `Poseidon(pkX, pkY, itemId, itemRarity, itemSalt)` | 5 |
 | F5 (아이템) | `Poseidon(pkX, pkY, itemId, itemType, itemAttributes, gameId, salt)` | 7 |
 | F5 (결제) | `Poseidon(sellerPkX, sellerPkY, price, paymentToken, paymentSalt)` | 5 |
+| F8 (덱) | `DeckCommitment(deckCards[52], deckSalt)` | 재귀 체인 |
+| F8 (드로우) | `Poseidon(drawnCard, drawIndex, gameId, handSalt)` | 4 |
+| F8 (플레이어) | `Poseidon(pkX, pkY, gameId)` | 3 |
 
 ### 핵심 메커니즘
 - **영지식 증명**: 송신자의 Private Key를 공개하지 않고도 해당 자산의 정당한 소유자임을 수학적으로 증명.
 - **널리파이어**: `Poseidon(itemId, salt, sk)`를 통해 각 전송마다 유니크한 값을 생성, 온체인에서 기록하여 재사용 공격 방지.
 - **Poseidon VRF**: `Poseidon(sk, seed)`로 결정론적이면서 예측 불가능한 랜덤성 제공 (루트 박스).
 - **게임 격리**: F5 아이템은 `gameId`에 바인딩되어 게임 간 아이템 유출 방지.
+- **Fisher-Yates 셔플**: F8은 Poseidon 기반 PRNG를 사용하여 ZK 회로 내에서 52장 카드 전체 셔플을 검증.
+- **DrawIndex 추적**: F8은 지속적인 덱 드로우를 위해 널리파이어 대신 온체인 `drawIndex` 매핑을 사용.
 
 ---
 

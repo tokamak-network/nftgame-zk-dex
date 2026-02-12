@@ -27,6 +27,7 @@ Before running tests, ensure:
    node scripts/compile-circuit.js private_nft_transfer
    node scripts/compile-circuit.js loot_box_open
    node scripts/compile-circuit.js gaming_item_trade
+   node scripts/compile-circuit.js card_draw
    ```
 4. **Contracts compiled**: `npx hardhat compile`
 
@@ -101,6 +102,24 @@ forge test --match-contract GamingItemTradeTest
 # Integration tests - real ZK proofs (9 tests)
 npx hardhat test test/GamingItemTrade.integration.test.js
 ```
+
+#### F8: Card Draw Verify
+
+```bash
+# Circuit unit tests (14 tests)
+npx mocha test/circuits/card-draw.test.js --timeout 300000
+
+# Contract unit tests - Hardhat mock verifier (9 tests)
+npx hardhat test test/CardDraw.test.js
+
+# Contract unit tests - Foundry (15 tests including fuzz)
+forge test --match-contract CardDrawTest
+
+# Integration tests - real ZK proofs (8 tests)
+npx hardhat test test/CardDraw.integration.test.js
+```
+
+> Note: F8 circuit tests require a longer timeout (~300s) due to the large Fisher-Yates shuffle circuit (~100K constraints).
 
 ---
 
@@ -311,6 +330,76 @@ npx hardhat test test/GamingItemTrade.integration.test.js
 
 ---
 
+### F8: Card Draw Verify (31 Hardhat/Mocha + 15 Foundry)
+
+#### Circuit Unit Tests (`test/circuits/card-draw.test.js`)
+
+| Test | Category | What it verifies |
+|------|----------|-----------------|
+| Valid card draw proof | Happy path | Complete proof lifecycle with Fisher-Yates shuffle |
+| Correct public signals order | Happy path | 5 signals: deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment |
+| Different draw indices | Happy path | Drawing at non-zero index (25) |
+| Different seeds produce different shuffles | Happy path | Shuffle uniqueness per seed |
+| Wrong secret key | Security | Ownership validation |
+| Wrong shuffleSeed | Security | Shuffle integrity (deck won't match) |
+| Wrong drawnCard | Security | Card-index binding |
+| Wrong drawIndex | Security | Index-card binding |
+| Wrong gameId | Security | Game session isolation |
+| Wrong deckCommitment | Security | Deck commitment integrity |
+| Wrong drawCommitment | Security | Draw commitment integrity |
+| Tampered public signal (deckCommitment) | Security | Proof-signal binding |
+| Tampered public signal (drawCommitment) | Security | Proof-signal binding |
+| Tampered public signal (playerCommitment) | Security | Proof-signal binding |
+
+#### Contract Unit Tests (`test/CardDraw.test.js`)
+
+| Test | What it verifies |
+|------|-----------------|
+| Register a new deck | Basic deck registration with gameId |
+| Reject duplicate game registration | Registration uniqueness per game |
+| Reject duplicate note hash | Note hash uniqueness |
+| Emit DeckRegistered event | Event emission with correct args |
+| Draw card with valid proof (mock) | Draw flow with mock verifier, deck remains Valid |
+| Reject duplicate drawIndex (same game) | Double-draw prevention |
+| Allow multiple draws at different indices | Multi-draw from persistent deck |
+| Reject draw for unregistered game | Game registration check |
+| Emit CardDrawn event | Event emission with correct args |
+
+#### Foundry Tests (`test/foundry/CardDraw.t.sol`)
+
+| Test | Category | What it verifies |
+|------|----------|-----------------|
+| test_RegisterDeck | Happy path | Basic deck note creation |
+| test_RegisterDeck_EmitsEvent | Events | DeckRegistered event with correct args |
+| test_RegisterDeck_EmitsNoteCreated | Events | NoteCreated event from base contract |
+| test_RevertWhen_DuplicateGameRegistration | Security | Same gameId rejected |
+| test_RevertWhen_DuplicateNoteHash | Security | Same noteHash rejected |
+| testFuzz_RegisterDeck | Fuzz (256 runs) | Random deckCommitment/gameId registration |
+| test_DrawCard | Happy path | Full draw flow, deck stays Valid |
+| test_DrawCard_EmitsEvents | Events | NoteCreated + CardDrawn |
+| test_DrawMultipleCards | Happy path | 3 consecutive draws at indices 0, 1, 2 |
+| test_RevertWhen_DuplicateDrawIndex | Security | Same drawIndex reuse blocked |
+| test_RevertWhen_UnregisteredGame | Security | Non-existent game rejected |
+| test_RevertWhen_WrongDeckCommitment | Security | Wrong deck hash rejected |
+| test_GetNoteState_Invalid | View | Default state is Invalid (0) |
+| test_DrawnCards_False | View | Default draw state is false |
+| testFuzz_DrawCard | Fuzz (256 runs) | Random hashes/indices full draw flow |
+
+#### Integration Tests (`test/CardDraw.integration.test.js`)
+
+| Test | What it verifies |
+|------|-----------------|
+| Register deck and draw card with real ZK proof | Full pipeline end-to-end |
+| Draw at different index (10) | Non-zero index support |
+| Multiple draws from same deck | Multi-draw with same deckSalt/shuffleSeed |
+| Reject duplicate drawIndex | On-chain drawIndex tracking |
+| Reject duplicate deck registration | Registration uniqueness |
+| Reject duplicate note hash registration | Note hash uniqueness |
+| Emit DeckRegistered event | Event emission |
+| Emit CardDrawn event | Event emission |
+
+---
+
 ## Foundry Tests
 
 ### Overview
@@ -365,6 +454,8 @@ Fuzz tests use `vm.assume()` to filter invalid inputs and run 256 iterations by 
 | `testFuzz_OpenBox` | LootBoxOpen | boxHash, outcomeHash, vrfOutput, nullifier, boxId | Full open flow with random values |
 | `testFuzz_RegisterItem` | GamingItemTrade | noteHash, gameId, itemId | Registration works for any valid inputs |
 | `testFuzz_TradeItem` | GamingItemTrade | oldHash, newHash, paymentHash, nullifier, itemId | Full trade flow with random values |
+| `testFuzz_RegisterDeck` | CardDraw | deckCommitment, gameId | Registration works for any valid inputs |
+| `testFuzz_DrawCard` | CardDraw | deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment | Full draw flow with random values |
 
 ---
 
@@ -383,6 +474,7 @@ Run the circuit compilation:
 node scripts/compile-circuit.js private_nft_transfer
 node scripts/compile-circuit.js loot_box_open
 node scripts/compile-circuit.js gaming_item_trade
+node scripts/compile-circuit.js card_draw    # ~5-10 min (99K constraints)
 ```
 
 ### "HH701: Artifact not found" — Verifier contract not compiled
@@ -399,9 +491,9 @@ Circuit proof generation can be slow. Increase the timeout:
 npx mocha test/circuits/ --timeout 300000
 ```
 
-### Three Groth16Verifier contracts
+### Four Groth16Verifier contracts
 
-F1, F4, and F5 each generate a Solidity verifier named `Groth16Verifier`. Hardhat handles this with fully qualified names. In code:
+F1, F4, F5, and F8 each generate a Solidity verifier named `Groth16Verifier`. Hardhat handles this with fully qualified names. In code:
 ```javascript
 // Use fully qualified path to avoid ambiguity
 const Verifier = await ethers.getContractFactory(

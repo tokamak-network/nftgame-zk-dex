@@ -13,7 +13,7 @@ This project utilizes Zero-Knowledge Proofs (ZKPs) to solve the "exposure of own
 | **F1: Private NFT Transfer** | Private NFT ownership transfer with UTXO-style notes | Done |
 | **F4: Loot Box Open** | Verifiable random loot box opening with Poseidon-based VRF | Done |
 | **F5: Gaming Item Trade** | P2P game item trading with payment support & game ecosystem isolation | Done |
-| **F8: Card Draw** | Verifiable random card draw system | Planned |
+| **F8: Card Draw** | Verifiable card draw with full Fisher-Yates shuffle | Done |
 
 ### F1: Private NFT Transfer
 - **Private NFT Transfer**: Transfer NFT ownership using a UTXO-style "Note" system.
@@ -32,6 +32,13 @@ This project utilizes Zero-Knowledge Proofs (ZKPs) to solve the "exposure of own
 - **Payment Support**: Supports both paid trades and free gifts (price=0).
 - **Game Ecosystem Isolation**: `gameId` binding ensures items cannot cross between different game ecosystems.
 - **Attribute Preservation**: `itemType` and `itemAttributes` are cryptographically guaranteed to be preserved across trades.
+
+### F8: Card Draw Verify
+- **Full Shuffle Verification**: Fisher-Yates shuffle of a 52-card deck verified entirely within the ZK circuit (~99K constraints).
+- **Persistent Deck**: Deck commitment is not consumed on draw — multiple cards can be drawn from the same deck.
+- **DrawIndex Tracking**: On-chain `drawIndex` mapping replaces nullifiers for double-draw prevention.
+- **Hidden Cards**: All 52 deck cards and the drawn card are private inputs — only commitments are public.
+- **Deterministic Randomness**: Poseidon-based PRNG generates shuffle randomness from a private seed.
 
 ---
 
@@ -53,12 +60,15 @@ This project utilizes Zero-Knowledge Proofs (ZKPs) to solve the "exposure of own
 │   ├── main/                  # Main circuit files
 │   │   ├── private_nft_transfer.circom   # F1 circuit
 │   │   ├── loot_box_open.circom         # F4 circuit
-│   │   └── gaming_item_trade.circom      # F5 circuit
+│   │   ├── gaming_item_trade.circom      # F5 circuit
+│   │   └── card_draw.circom              # F8 circuit
 │   ├── utils/                 # Shared utility circuits
 │   │   ├── babyjubjub/        # Ownership proof, key derivation
 │   │   ├── vrf/               # Poseidon-based VRF (shared F4/F8)
+│   │   ├── array/             # ArrayRead (variable-index access)
+│   │   ├── shuffle/           # Fisher-Yates shuffle verification
 │   │   ├── nullifier.circom   # Nullifier computation
-│   │   └── poseidon/          # Poseidon note hashing
+│   │   └── poseidon/          # Poseidon note hashing, deck commitment
 │   ├── build/                 # Compiled circuit artifacts (r1cs, wasm, zkey)
 │   └── ptau/                  # Powers of Tau ceremony file
 ├── contracts/
@@ -66,6 +76,7 @@ This project utilizes Zero-Knowledge Proofs (ZKPs) to solve the "exposure of own
 │   ├── PrivateNFT.sol         # F1 main contract
 │   ├── LootBoxOpen.sol        # F4 main contract
 │   ├── GamingItemTrade.sol    # F5 main contract
+│   ├── CardDraw.sol           # F8 main contract
 │   ├── verifiers/             # Groth16 verifier contracts + interfaces
 │   └── test/                  # Mock verifiers for unit testing
 ├── test/
@@ -75,7 +86,9 @@ This project utilizes Zero-Knowledge Proofs (ZKPs) to solve the "exposure of own
 │   ├── LootBoxOpen.test.js                  # F4 contract unit tests (mock verifier)
 │   ├── LootBoxOpen.integration.test.js      # F4 integration tests (real ZK proofs)
 │   ├── GamingItemTrade.test.js             # F5 contract unit tests (mock verifier)
-│   └── GamingItemTrade.integration.test.js # F5 integration tests (real ZK proofs)
+│   ├── GamingItemTrade.integration.test.js # F5 integration tests (real ZK proofs)
+│   ├── CardDraw.test.js                   # F8 contract unit tests (mock verifier)
+│   └── CardDraw.integration.test.js       # F8 integration tests (real ZK proofs)
 ├── scripts/
 │   ├── compile-circuit.js     # Circuit compilation pipeline
 │   └── lib/                   # JS crypto utilities (BabyJubJub, Poseidon, proof gen)
@@ -90,7 +103,7 @@ This project utilizes Zero-Knowledge Proofs (ZKPs) to solve the "exposure of own
 
 ---
 
-## Test Status (124/124 Passed)
+## Test Status (170/170 Passed)
 
 All core features have been tested and verified across three frameworks.
 
@@ -121,6 +134,15 @@ All core features have been tested and verified across three frameworks.
 | Contract Unit - Foundry (Mock + Fuzz) | 17 | Registration, paid/gift trade, chaining, game isolation, reverts, events, fuzz (256 runs) |
 | Integration (Real ZK) | 9 | Real proof paid/gift trade, chained A->B->C, double-spend, event emission |
 
+### F8: Card Draw Verify (46 tests)
+
+| Category | Tests | Details |
+|----------|-------|---------|
+| Circuit Unit (Mocha) | 14 | Valid draw, different indices, different seeds, wrong sk/seed/card/index/gameId/commitments, tampering |
+| Contract Unit - Hardhat (Mock) | 9 | Registration, duplicates, draw with mock verifier, multi-draw, events |
+| Contract Unit - Foundry (Mock + Fuzz) | 15 | Registration, draw, multi-draw, reverts, events, fuzz (256 runs) |
+| Integration (Real ZK) | 8 | Real proof draw, different index, multi-draw from same deck, duplicate rejection, events |
+
 ---
 
 ## Quick Start
@@ -133,6 +155,7 @@ npm install
 node scripts/compile-circuit.js private_nft_transfer
 node scripts/compile-circuit.js loot_box_open
 node scripts/compile-circuit.js gaming_item_trade
+node scripts/compile-circuit.js card_draw    # ~5-10 min
 
 # 3. Compile contracts
 npx hardhat compile
@@ -158,12 +181,17 @@ See [docs/setup.md](docs/setup.md) for detailed environment setup and [docs/test
 | F4 (Outcome) | `Poseidon(pkX, pkY, itemId, itemRarity, itemSalt)` | 5 |
 | F5 (Item) | `Poseidon(pkX, pkY, itemId, itemType, itemAttributes, gameId, salt)` | 7 |
 | F5 (Payment) | `Poseidon(sellerPkX, sellerPkY, price, paymentToken, paymentSalt)` | 5 |
+| F8 (Deck) | `DeckCommitment(deckCards[52], deckSalt)` | Recursive chain |
+| F8 (Draw) | `Poseidon(drawnCard, drawIndex, gameId, handSalt)` | 4 |
+| F8 (Player) | `Poseidon(pkX, pkY, gameId)` | 3 |
 
 ### Core Mechanisms
 - **Zero-Knowledge Proof**: Proves legitimate ownership without revealing the sender's private key.
 - **Nullifier**: `Poseidon(itemId, salt, sk)` generates a unique value per transfer, recorded on-chain to prevent replay attacks.
 - **Poseidon VRF**: `Poseidon(sk, seed)` provides deterministic, unpredictable randomness for loot boxes.
 - **Game Isolation**: F5 items are bound to `gameId`, preventing cross-game item leakage.
+- **Fisher-Yates Shuffle**: F8 verifies a full 52-card shuffle inside the ZK circuit with Poseidon-based PRNG.
+- **DrawIndex Tracking**: F8 uses on-chain `drawIndex` mapping instead of nullifiers for persistent deck draws.
 
 ---
 

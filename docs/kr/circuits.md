@@ -13,6 +13,9 @@
 | `ComputeNullifier` | `utils/nullifier.circom` | Poseidon(itemId, salt, sk) 계산 |
 | `PoseidonNote` | `utils/poseidon/poseidon_note.circom` | 노트 해싱을 위한 7-입력 Poseidon |
 | `PoseidonVRF` | `utils/vrf/poseidon_vrf.circom` | F4/F8을 위한 Poseidon(sk, seed) 기반 VRF |
+| `ArrayRead` | `utils/array/array_read.circom` | IsEqual 멀티플렉서를 통한 가변 인덱스 배열 읽기 |
+| `FisherYatesShuffle` | `utils/shuffle/fisher_yates.circom` | 전체 Fisher-Yates 셔플 검증 |
+| `DeckCommitment` | `utils/poseidon/deck_commitment.circom` | 덱 해싱을 위한 재귀 Poseidon 체인 |
 
 ### 주요 설계 결정
 
@@ -34,7 +37,6 @@ NFT 소유권을 타인에게 비공개로 전송하며 다음을 증명합니�
 2. 기존 노트 해시가 커밋된 해시와 일치함
 3. 새로운 노트가 수신자를 위해 올바르게 형성됨
 4. 널리파이어(Nullifier)가 올바르게 계산됨
-5. NFT의 신원(nftId, collectionAddress)이 유지됨
 
 ### 노트 구조
 
@@ -312,6 +314,177 @@ PoseidonVRF(sk, seed) → Poseidon(sk, seed)
 
 ---
 
+## F8: 카드 뽑기 검증 (Card Draw Verify)
+
+**파일**: `circuits/main/card_draw.circom`
+
+### 목적
+
+52장 카드 덱의 전체 Fisher-Yates 셔플을 검증하고 특정 카드를 드로우하며 다음을 증명합니다:
+1. 플레이어가 공개키에 매칭되는 비밀키를 소유하고 있음
+2. 플레이어 커밋먼트가 올바르게 계산됨
+3. 주어진 시드(shuffleSeed)를 사용한 Fisher-Yates 셔플이 주장하는 덱을 생성함
+4. 덱 커밋먼트가 셔플된 덱의 재귀 Poseidon 체인과 일치함
+5. 드로우된 카드가 deck[drawIndex]와 일치함
+6. 드로우 커밋먼트가 올바르게 계산됨
+7. drawIndex와 drawnCard가 범위 내에 있음 (< 52)
+
+### 주요 설계: 영속적 덱 (Persistent Deck)
+
+트랜잭션당 노트가 소비(spent)되는 F1/F4/F5와 달리, F8의 덱 커밋먼트는 **영속적(persistent)**입니다. 동일한 덱에서 여러 번 드로우할 수 있으며, 이중 드로우 방지를 위해 온체인에서 `drawIndex`를 추적합니다. 널리파이어는 필요하지 않습니다.
+
+### 공유 유틸리티
+
+#### ArrayRead(N)
+
+**파일**: `circuits/utils/array/array_read.circom`
+
+N개의 IsEqual 비교를 사용하여 런타임 가변 인덱스에서 배열 값을 읽습니다:
+
+```
+ArrayRead(N).arr[N], .index → .out = arr[index]
+```
+
+- **제약 조건**: 약 4*N (N개의 IsEqual + N개의 곱셈)
+
+#### FisherYatesShuffle(N)
+
+**파일**: `circuits/utils/shuffle/fisher_yates.circom`
+
+주어진 덱 순서가 결정론적 시드를 사용한 Fisher-Yates 셔플의 올바른 결과인지 검증합니다:
+
+```
+Step s = 0 to N-2 단계에 대해:
+  i = N - 1 - s                      (컴파일 타임)
+  r = Poseidon(seed, s)              (결정론적 랜덤)
+  j = extract14bits(r) % (i + 1)    (스왑 타겟)
+  swap(deck[i], deck[j])            (가변 인덱스 스왑)
+```
+
+각 단계별 요구 사항:
+- Poseidon(2) 해시 1개 (~300 제약 조건)
+- Num2Bits(254) + Bits2Num(14) 1개 (~270 제약 조건)
+- 나눗셈 증명 + LessThan(14) 1개 (~40 제약 조건)
+- 2*N개의 IsEqual (읽기 + 쓰기 멀티플렉서) (~8*N 제약 조건)
+
+#### DeckCommitment(N)
+
+**파일**: `circuits/utils/poseidon/deck_commitment.circom`
+
+재귀 Poseidon 해시 체인을 사용하여 전체 덱에 대한 커밋먼트를 계산합니다:
+
+```
+h[0] = Poseidon(cards[0], cards[1])
+h[i] = Poseidon(h[i-1], cards[i+1])   (i = 1..N-2)
+out  = Poseidon(h[N-2], salt)
+```
+
+- **제약 조건**: 약 N * 300 (N개의 Poseidon(2) 해시)
+
+### 노트 구조
+
+```
+덱 커밋먼트 (Deck Commitment)  = DeckCommitment(deckCards[52], deckSalt)
+                               = 52장 카드 + 솔트의 재귀 Poseidon 체인
+
+드로우 커밋먼트 (Draw Commitment) = Poseidon(drawnCard, drawIndex, gameId, handSalt)
+                                 = Poseidon(4개 입력)
+
+플레이어 커밋먼트 (Player Commitment) = Poseidon(pkX, pkY, gameId)
+                                     = Poseidon(3개 입력)
+```
+
+### 신호 명세 (Signal Specification)
+
+#### 공개 입력 (Public Inputs - 5개)
+
+| # | 신호명 | 타입 | 설명 |
+|---|--------|------|-------------|
+| 0 | `deckCommitment` | field | 셔플된 전체 덱의 해시 커밋먼트 |
+| 1 | `drawCommitment` | field | 드로우된 카드에 대한 커밋먼트 |
+| 2 | `drawIndex` | field | 드로우할 덱 내 위치 (0-51) |
+| 3 | `gameId` | field | 게임 세션 식별자 |
+| 4 | `playerCommitment` | field | Poseidon(pkX, pkY, gameId) |
+
+#### 비공개 입력 (Private Inputs - 59개)
+
+| 신호명 | 설명 |
+|--------|-------------|
+| `playerPkX` | 플레이어 BabyJubJub 공개키 X |
+| `playerPkY` | 플레이어 BabyJubJub 공개키 Y |
+| `playerSk` | 플레이어 비밀키 |
+| `shuffleSeed` | Fisher-Yates 셔플용 시드 |
+| `deckCards[52]` | 셔플된 덱 (52개 카드 값 전체) |
+| `drawnCard` | 드로우된 카드 값 |
+| `handSalt` | 드로우 커밋먼트용 솔트 |
+| `deckSalt` | 덱 커밋먼트용 솔트 |
+
+### 제약 조건 분석
+
+| 메트릭 | 수치 |
+|--------|-------|
+| 전체 제약 조건 (Total constraints) | 99,440 |
+| 전체 와이어 (Total wires) | 99,341 |
+| 공개 입력 수 | 5 |
+| 비공개 입력 수 | 59 |
+
+### 제약 조건 세부 내역
+
+| 컴포넌트 | 대략적인 제약 조건 수 |
+|-----------|-------------------|
+| ProofOfOwnership | ~4,800 |
+| 플레이어 커밋먼트 (Poseidon(3)) | ~300 |
+| FisherYatesShuffle(52) | ~50,000 |
+| DeckCommitment(52) | ~15,600 |
+| ArrayRead(52) | ~210 |
+| 드로우 커밋먼트 (Poseidon(4)) | ~300 |
+| 범위 체크 (2x LessThan(6)) | ~60 |
+
+### 회로 흐름
+
+```
+1. ownership = ProofOfOwnership(pk=[playerPkX, playerPkY], sk=playerSk)
+   → assert: ownership.valid === 1
+
+2. playerHash = Poseidon(playerPkX, playerPkY, gameId)
+   → assert: playerHash.out === playerCommitment
+
+3. shuffle = FisherYatesShuffle(52)(seed=shuffleSeed, verifyDeck=deckCards)
+   → assert: 셔플 검증 통과 (내부 등식 제약 조건)
+
+4. deckHash = DeckCommitment(52)(cards=deckCards, salt=deckSalt)
+   → assert: deckHash.out === deckCommitment
+
+5. readCard = ArrayRead(52)(arr=deckCards, index=drawIndex)
+   → assert: readCard.out === drawnCard
+
+6. drawHash = Poseidon(drawnCard, drawIndex, gameId, handSalt)
+   → assert: drawHash.out === drawCommitment
+
+7. 범위 체크 (Bound checks):
+   → assert: drawIndex < 52  (LessThan(6))
+   → assert: drawnCard < 52  (LessThan(6))
+```
+
+### Fisher-Yates 셔플 상세
+
+셔플은 14비트 추출 및 모듈러 연산을 포함한 Poseidon 기반 결정론적 무작위성을 사용합니다:
+
+| 단계 | 연산 | 범위 |
+|------|-----------|-------|
+| 해시 | `Poseidon(seed, stepIndex)` | 전체 필드 |
+| 추출 | `Num2Bits(254) → Bits2Num(14)`를 통해 하위 14비트 추출 | 0–16383 |
+| 나눗셈 | `quotient <-- randomVal \ divisor` | Witness |
+| 나머지 | `j <-- randomVal % divisor` | 0 ~ divisor-1 |
+| 제약 | `quotient * divisor + j === randomVal` | 정확한 값 |
+| 범위 | `LessThan(14): j < divisor` | 강제됨 |
+
+가변 인덱스 스왑은 각 단계마다 두 세트의 N개 IsEqual 멀티플렉서를 사용합니다:
+1. **읽기(Read)**: 배열에서 `deck[j]`를 선택
+2. **쓰기(Write)**: 조건에 따라 `deck[k]`를 스왑된 값으로 교체
+
+---
+
 ## 컴파일 파이프라인
 
 각 회로에 대해 빌드 스크립트(`scripts/compile-circuit.js`)는 다음을 실행합니다:
@@ -336,7 +509,7 @@ wasm/zkey/vkey 파일을 frontend/public/circuits/ 로 복사
 circuits/build/<circuit_name>/
 ├── <name>.r1cs              # 제약 조건 시스템
 ├── <name>.sym               # 심볼 테이블
-├── <name>.zkey              # 증명 키 (~10-20 MB)
+├── <name>.zkey              # 증명 키 (~10-20 MB; card_draw의 경우 약 80 MB)
 ├── <name>_vkey.json         # 검증 키 (~2 KB)
 └── <name>_js/
     └── <name>.wasm          # Witness 생성기 (~1-2 MB)

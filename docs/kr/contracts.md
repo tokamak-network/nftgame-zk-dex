@@ -7,18 +7,21 @@
 ### 컨트랙트 계층 구조
 
 ```
-NFTNoteBase (기본형)
+NFTNoteBase (베이스)
 ├── PrivateNFT (F1: 비공개 NFT 전송)
 ├── LootBoxOpen (F4: 루트 박스 개봉)
-└── GamingItemTrade (F5: 게임 아이템 거래)
+├── GamingItemTrade (F5: 게임 아이템 거래)
+└── CardDraw (F8: 카드 뽑기 검증)
 
 IGroth16Verifier.sol (인터페이스)
 ├── INFTTransferVerifier → PrivateNftTransferVerifier.sol (자동 생성)
 │                        → MockNFTTransferVerifier.sol (테스트용)
 ├── ILootBoxVerifier → LootBoxOpenVerifier.sol (자동 생성)
 │                    → MockLootBoxVerifier.sol (테스트용)
-└── IGamingItemTradeVerifier → GamingItemTradeVerifier.sol (자동 생성)
-                             → MockGamingItemTradeVerifier.sol (테스트용)
+├── IGamingItemTradeVerifier → GamingItemTradeVerifier.sol (자동 생성)
+│                            → MockGamingItemTradeVerifier.sol (테스트용)
+└── ICardDrawVerifier → CardDrawVerifier.sol (자동 생성)
+                      → MockCardDrawVerifier.sol (테스트용)
 ```
 
 ---
@@ -27,7 +30,7 @@ IGroth16Verifier.sol (인터페이스)
 
 **파일**: `contracts/NFTNoteBase.sol`
 
-UTXO 스타일의 노트 관리 및 널리파이어(nullifier) 추적 기능을 제공하는 기본 컨트랙트입니다. F1, F4, F5에서 공통으로 사용됩니다.
+UTXO 스타일의 노트 관리 및 널리파이어(nullifier) 추적 기능을 제공하는 베이스 컨트랙트이며, F1, F4, F5, F8에서 공통으로 사용됩니다.
 
 ### 상태 (State)
 
@@ -234,11 +237,70 @@ UTXO 스타일의 노트 관리 및 널리파이어(nullifier) 추적 기능을 
 
 ---
 
+## CardDraw (F8)
+
+**파일**: `contracts/CardDraw.sol`
+
+`NFTNoteBase`를 상속받으며, 영지식 증명을 사용하여 Fisher-Yates로 셔플된 덱에서 검증 가능한 카드 뽑기를 관리합니다.
+
+### 핵심 설계: 영속적 덱 (Persistent Deck)
+
+노트가 작업당 소비(`Spent`)되는 F1/F4/F5와 달리, CardDraw의 덱 커밋먼트는 **영속적(persistent)**입니다. 즉, 여러 번 카드를 뽑는 동안에도 `Valid` 상태를 유지합니다. 중복 드로우 방지를 위해 널리파이이 대신 `drawIndex` 추적 방식을 사용합니다.
+
+### 상태 (State)
+
+| 변수명 | 타입 | 설명 |
+|----------|------|-------------|
+| `drawVerifier` | `ICardDrawVerifier` | ZK 증명 검증기 컨트랙트 |
+| `registeredDecks` | `mapping(uint256 => bytes32)` | GameId -> 덱 커밋먼트 |
+| `drawnCards` | `mapping(uint256 => mapping(uint256 => bool))` | GameId -> DrawIndex -> 드로우 여부 |
+
+### 함수
+
+#### `registerDeck(deckCommitment, gameId, encryptedNote)`
+
+게임 세션을 위한 셔플된 덱을 등록합니다.
+
+| 파라미터 | 타입 | 설명 |
+|-----------|------|-------------|
+| `deckCommitment` | `bytes32` | 덱 노트 커밋먼트 (재귀 Poseidon 체인) |
+| `gameId` | `uint256` | 게임 세션 식별자 |
+| `encryptedNote` | `bytes` | ECDH 암호화된 덱 데이터 |
+
+**실패 조건**: 동일한 gameId에 대해 이미 덱이 등록된 경우 "Deck already registered for this game"과 함께 되돌립니다.
+
+#### `drawCard(a, b, c, deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment, encryptedCardNote)`
+
+영지식 증명을 사용하여 등록된 덱에서 카드를 뽑습니다.
+
+| 파라미터 | 타입 | 설명 |
+|-----------|------|-------------|
+| `a`, `b`, `c` | `uint256[2]`, `uint256[2][2]`, `uint256[2]` | Groth16 증명 포인트 |
+| `deckCommitment` | `bytes32` | 덱 노트 해시 |
+| `drawCommitment` | `bytes32` | 드로우된 카드 커밋먼트 |
+| `drawIndex` | `uint256` | 드로우할 덱 내 위치 (0-51) |
+| `gameId` | `uint256` | 게임 세션 식별자 |
+| `playerCommitment` | `bytes32` | Poseidon(pkX, pkY, gameId) |
+| `encryptedCardNote` | `bytes` | 암호화된 드로우 카드 데이터 |
+
+**검증기 공개 입력**: `[deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment]`
+
+**실패 조건**: "Invalid card draw proof", "Deck not registered for this game", "Deck note not valid", "Card already drawn at this index"
+
+### 이벤트 (Events)
+
+| 이벤트 | 파라미터 |
+|-------|------------|
+| `DeckRegistered` | `gameId (indexed), deckCommitment` |
+| `CardDrawn` | `deckCommitment (indexed), drawCommitment (indexed), drawIndex, gameId, playerCommitment` |
+
+---
+
 ## 검증기 인터페이스 (Verifier Interfaces)
 
 **파일**: `contracts/verifiers/IGroth16Verifier.sol`
 
-모든 세 인터페이스는 동일한 시그니처(5개의 공개 입력)를 가집니다.
+모든 네 인터페이스는 동일한 시그니처(5개의 공개 입력)를 가집니다.
 
 ```solidity
 interface INFTTransferVerifier {
@@ -267,6 +329,15 @@ interface IGamingItemTradeVerifier {
         uint256[5] memory input
     ) external view returns (bool);
 }
+
+interface ICardDrawVerifier {
+    function verifyProof(
+        uint256[2] memory a,
+        uint256[2][2] memory b,
+        uint256[2] memory c,
+        uint256[5] memory input
+    ) external view returns (bool);
+}
 ```
 
 ### 생성된 검증기 (Generated Verifiers)
@@ -276,10 +347,11 @@ interface IGamingItemTradeVerifier {
 | `PrivateNftTransferVerifier.sol` | F1 회로 zkey | `Groth16Verifier` |
 | `LootBoxOpenVerifier.sol` | F4 회로 zkey | `Groth16Verifier` |
 | `GamingItemTradeVerifier.sol` | F5 회로 zkey | `Groth16Verifier` |
+| `CardDrawVerifier.sol` | F8 회로 zkey | `Groth16Verifier` |
 
-> snarkjs의 기본값에 따라 세 컨트랙트 모두 이름이 `Groth16Verifier`입니다. Hardhat에서는 다음과 같이 정규화된 경로를 사용하십시오:
+> snarkjs의 기본값에 따라 네 컨트랙트 모두 이름이 `Groth16Verifier`입니다. Hardhat에서는 다음과 같이 정규화된 경로를 사용하십시오:
 > ```javascript
-> ethers.getContractFactory("contracts/verifiers/GamingItemTradeVerifier.sol:Groth16Verifier")
+> ethers.getContractFactory("contracts/verifiers/CardDrawVerifier.sol:Groth16Verifier")
 > ```
 
 ### 모의 검증기 (Mock Verifiers)
@@ -291,6 +363,7 @@ interface IGamingItemTradeVerifier {
 | `test/MockNFTTransferVerifier.sol` | `INFTTransferVerifier` | Hardhat + Foundry 테스트 |
 | `test/MockLootBoxVerifier.sol` | `ILootBoxVerifier` | Hardhat + Foundry 테스트 |
 | `test/MockGamingItemTradeVerifier.sol` | `IGamingItemTradeVerifier` | Hardhat + Foundry 테스트 |
+| `test/MockCardDrawVerifier.sol` | `ICardDrawVerifier` | Hardhat + Foundry 테스트 |
 
 ---
 
@@ -323,6 +396,7 @@ Foundry (Forge) 테스트는 `test/foundry/`에 위치하며 어설션, 이벤�
 | `test/foundry/PrivateNFT.t.sol` | `PrivateNFTTest` | 14 | 1 (256회 실행) |
 | `test/foundry/LootBoxOpen.t.sol` | `LootBoxOpenTest` | 15 | 2 (256회 실행) |
 | `test/foundry/GamingItemTrade.t.sol` | `GamingItemTradeTest` | 17 | 2 (256회 실행) |
+| `test/foundry/CardDraw.t.sol` | `CardDrawTest` | 15 | 2 (256회 실행) |
 
 ### 테스트 패턴
 
@@ -357,6 +431,7 @@ forge test --gas-report
 
 # 특정 컨트랙트만 테스트
 forge test --match-contract GamingItemTradeTest -vv
+forge test --match-contract CardDrawTest -vv
 ```
 
 ---
@@ -370,6 +445,7 @@ forge test --match-contract GamingItemTradeTest -vv
 | `PrivateNFT` | `address _transferVerifier` | 배포된 `PrivateNftTransferVerifier` 주소 |
 | `LootBoxOpen` | `address _lootBoxVerifier` | 배포된 `LootBoxOpenVerifier` 주소 |
 | `GamingItemTrade` | `address _tradeVerifier` | 배포된 `GamingItemTradeVerifier` 주소 |
+| `CardDraw` | `address _drawVerifier` | 배포된 `CardDrawVerifier` 주소 |
 
 ### 배포 순서
 
@@ -379,3 +455,5 @@ forge test --match-contract GamingItemTradeTest -vv
 4. `LootBoxOpen(verifierAddress)` 배포
 5. `Groth16Verifier` 배포 (`GamingItemTradeVerifier.sol`에서)
 6. `GamingItemTrade(verifierAddress)` 배포
+7. `Groth16Verifier` 배포 (`CardDrawVerifier.sol`에서)
+8. `CardDraw(verifierAddress)` 배포

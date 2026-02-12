@@ -10,15 +10,18 @@ All contracts are written in Solidity 0.8.20, compiled with both Hardhat and Fou
 NFTNoteBase (base)
 ├── PrivateNFT (F1: Private NFT Transfer)
 ├── LootBoxOpen (F4: Loot Box Open)
-└── GamingItemTrade (F5: Gaming Item Trade)
+├── GamingItemTrade (F5: Gaming Item Trade)
+└── CardDraw (F8: Card Draw Verify)
 
 IGroth16Verifier.sol (interfaces)
 ├── INFTTransferVerifier → PrivateNftTransferVerifier.sol (generated)
 │                        → MockNFTTransferVerifier.sol (test)
 ├── ILootBoxVerifier → LootBoxOpenVerifier.sol (generated)
 │                    → MockLootBoxVerifier.sol (test)
-└── IGamingItemTradeVerifier → GamingItemTradeVerifier.sol (generated)
-                             → MockGamingItemTradeVerifier.sol (test)
+├── IGamingItemTradeVerifier → GamingItemTradeVerifier.sol (generated)
+│                            → MockGamingItemTradeVerifier.sol (test)
+└── ICardDrawVerifier → CardDrawVerifier.sol (generated)
+                      → MockCardDrawVerifier.sol (test)
 ```
 
 ---
@@ -27,7 +30,7 @@ IGroth16Verifier.sol (interfaces)
 
 **File**: `contracts/NFTNoteBase.sol`
 
-Base contract providing UTXO-style note management and nullifier tracking, shared by F1, F4, and F5.
+Base contract providing UTXO-style note management and nullifier tracking, shared by F1, F4, F5, and F8.
 
 ### State
 
@@ -234,11 +237,70 @@ Trade an item privately with a ZK proof.
 
 ---
 
+## CardDraw (F8)
+
+**File**: `contracts/CardDraw.sol`
+
+Inherits `NFTNoteBase`. Manages verifiable card draws from a Fisher-Yates shuffled deck using ZK proofs.
+
+### Key Design: Persistent Deck
+
+Unlike F1/F4/F5 where notes are consumed (spent) per action, CardDraw's deck commitment is **persistent** — it remains Valid across multiple draws. Double-draw prevention uses `drawIndex` tracking instead of nullifiers.
+
+### State
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `drawVerifier` | `ICardDrawVerifier` | ZK proof verifier contract |
+| `registeredDecks` | `mapping(uint256 => bytes32)` | GameId -> deck commitment |
+| `drawnCards` | `mapping(uint256 => mapping(uint256 => bool))` | GameId -> DrawIndex -> drawn |
+
+### Functions
+
+#### `registerDeck(deckCommitment, gameId, encryptedNote)`
+
+Register a shuffled deck for a game session.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deckCommitment` | `bytes32` | Deck note commitment (recursive Poseidon chain) |
+| `gameId` | `uint256` | Game session identifier |
+| `encryptedNote` | `bytes` | ECDH-encrypted deck data |
+
+**Reverts**: "Deck already registered for this game" if the same gameId is registered twice.
+
+#### `drawCard(a, b, c, deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment, encryptedCardNote)`
+
+Draw a card from a registered deck with a ZK proof.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `a`, `b`, `c` | `uint256[2]`, `uint256[2][2]`, `uint256[2]` | Groth16 proof points |
+| `deckCommitment` | `bytes32` | Deck note hash |
+| `drawCommitment` | `bytes32` | Drawn card commitment |
+| `drawIndex` | `uint256` | Position in deck to draw (0-51) |
+| `gameId` | `uint256` | Game session identifier |
+| `playerCommitment` | `bytes32` | Poseidon(pkX, pkY, gameId) |
+| `encryptedCardNote` | `bytes` | Encrypted drawn card data |
+
+**Public inputs to verifier**: `[deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment]`
+
+**Reverts**: "Invalid card draw proof", "Deck not registered for this game", "Deck note not valid", "Card already drawn at this index"
+
+### Events
+
+| Event | Parameters |
+|-------|------------|
+| `DeckRegistered` | `gameId (indexed), deckCommitment` |
+| `CardDrawn` | `deckCommitment (indexed), drawCommitment (indexed), drawIndex, gameId, playerCommitment` |
+
+---
+
 ## Verifier Interfaces
 
 **File**: `contracts/verifiers/IGroth16Verifier.sol`
 
-All three interfaces have the same signature (5 public inputs):
+All four interfaces have the same signature (5 public inputs):
 
 ```solidity
 interface INFTTransferVerifier {
@@ -267,6 +329,15 @@ interface IGamingItemTradeVerifier {
         uint256[5] memory input
     ) external view returns (bool);
 }
+
+interface ICardDrawVerifier {
+    function verifyProof(
+        uint256[2] memory a,
+        uint256[2][2] memory b,
+        uint256[2] memory c,
+        uint256[5] memory input
+    ) external view returns (bool);
+}
 ```
 
 ### Generated Verifiers
@@ -276,8 +347,9 @@ interface IGamingItemTradeVerifier {
 | `PrivateNftTransferVerifier.sol` | F1 circuit zkey | `Groth16Verifier` |
 | `LootBoxOpenVerifier.sol` | F4 circuit zkey | `Groth16Verifier` |
 | `GamingItemTradeVerifier.sol` | F5 circuit zkey | `Groth16Verifier` |
+| `CardDrawVerifier.sol` | F8 circuit zkey | `Groth16Verifier` |
 
-> All three have the contract name `Groth16Verifier` (snarkjs default). Use fully qualified names in Hardhat:
+> All four have the contract name `Groth16Verifier` (snarkjs default). Use fully qualified names in Hardhat:
 > ```javascript
 > ethers.getContractFactory("contracts/verifiers/GamingItemTradeVerifier.sol:Groth16Verifier")
 > ```
@@ -291,6 +363,7 @@ For unit testing (both Hardhat and Foundry), mock verifiers always return `true`
 | `test/MockNFTTransferVerifier.sol` | `INFTTransferVerifier` | Hardhat + Foundry tests |
 | `test/MockLootBoxVerifier.sol` | `ILootBoxVerifier` | Hardhat + Foundry tests |
 | `test/MockGamingItemTradeVerifier.sol` | `IGamingItemTradeVerifier` | Hardhat + Foundry tests |
+| `test/MockCardDrawVerifier.sol` | `ICardDrawVerifier` | Hardhat + Foundry tests |
 
 ---
 
@@ -323,6 +396,7 @@ Foundry (Forge) tests are located in `test/foundry/` and use forge-std for asser
 | `test/foundry/PrivateNFT.t.sol` | `PrivateNFTTest` | 14 | 1 (256 runs) |
 | `test/foundry/LootBoxOpen.t.sol` | `LootBoxOpenTest` | 15 | 2 (256 runs) |
 | `test/foundry/GamingItemTrade.t.sol` | `GamingItemTradeTest` | 17 | 2 (256 runs) |
+| `test/foundry/CardDraw.t.sol` | `CardDrawTest` | 15 | 2 (256 runs) |
 
 ### Test Pattern
 
@@ -356,7 +430,8 @@ forge test -vv
 forge test --gas-report
 
 # Specific contract
-forge test --match-contract GamingItemTradeTest -vv
+forge test --match-contract GamingItemTradeTest
+forge test --match-contract CardDrawTest -vv
 ```
 
 ---
@@ -370,6 +445,7 @@ Constructor parameters:
 | `PrivateNFT` | `address _transferVerifier` | Deployed `PrivateNftTransferVerifier` address |
 | `LootBoxOpen` | `address _lootBoxVerifier` | Deployed `LootBoxOpenVerifier` address |
 | `GamingItemTrade` | `address _tradeVerifier` | Deployed `GamingItemTradeVerifier` address |
+| `CardDraw` | `address _drawVerifier` | Deployed `CardDrawVerifier` address |
 
 ### Deployment Order
 
@@ -379,3 +455,5 @@ Constructor parameters:
 4. Deploy `LootBoxOpen(verifierAddress)`
 5. Deploy `Groth16Verifier` (from `GamingItemTradeVerifier.sol`)
 6. Deploy `GamingItemTrade(verifierAddress)`
+7. Deploy `Groth16Verifier` (from `CardDrawVerifier.sol`)
+8. Deploy `CardDraw(verifierAddress)`

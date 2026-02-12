@@ -13,6 +13,9 @@ All circuits use the **Groth16** proof system on the **BN128** elliptic curve. E
 | `ComputeNullifier` | `utils/nullifier.circom` | Poseidon(itemId, salt, sk) |
 | `PoseidonNote` | `utils/poseidon/poseidon_note.circom` | 7-input Poseidon for note hashing |
 | `PoseidonVRF` | `utils/vrf/poseidon_vrf.circom` | Poseidon(sk, seed) VRF for F4/F8 |
+| `ArrayRead` | `utils/array/array_read.circom` | Variable-index array read via IsEqual multiplexer |
+| `FisherYatesShuffle` | `utils/shuffle/fisher_yates.circom` | Full Fisher-Yates shuffle verification |
+| `DeckCommitment` | `utils/poseidon/deck_commitment.circom` | Recursive Poseidon chain for deck hashing |
 
 ### Key Design Decisions
 
@@ -311,6 +314,177 @@ The gift/paid branching uses arithmetic instead of conditionals:
 
 ---
 
+## F8: Card Draw Verify
+
+**File**: `circuits/main/card_draw.circom`
+
+### Purpose
+
+Verify a full Fisher-Yates shuffle of a 52-card deck and draw a specific card, proving:
+1. Player owns the secret key matching their public key
+2. Player commitment is correctly computed
+3. Fisher-Yates shuffle with the given seed produces the claimed deck
+4. Deck commitment matches the recursive Poseidon chain of the shuffled deck
+5. Drawn card matches deck[drawIndex]
+6. Draw commitment is correctly computed
+7. drawIndex and drawnCard are within bounds (< 52)
+
+### Key Design: Persistent Deck
+
+Unlike F1/F4/F5 where notes are consumed (spent) per transaction, F8's deck commitment is **persistent**. The same deck can be drawn from multiple times, with `drawIndex` tracked on-chain to prevent double-draws. No nullifier is needed.
+
+### Shared Utilities
+
+#### ArrayRead(N)
+
+**File**: `circuits/utils/array/array_read.circom`
+
+Reads a value from an array at a variable (runtime) index using N IsEqual comparisons:
+
+```
+ArrayRead(N).arr[N], .index → .out = arr[index]
+```
+
+- **Constraints**: ~4*N (N IsEqual + N multiplications)
+
+#### FisherYatesShuffle(N)
+
+**File**: `circuits/utils/shuffle/fisher_yates.circom`
+
+Verifies that a given deck ordering is the correct result of Fisher-Yates shuffle with a deterministic seed:
+
+```
+For step s = 0 to N-2:
+  i = N - 1 - s                      (compile-time)
+  r = Poseidon(seed, s)              (deterministic random)
+  j = extract14bits(r) % (i + 1)    (swap target)
+  swap(deck[i], deck[j])            (variable-index swap)
+```
+
+Each step requires:
+- 1 Poseidon(2) hash (~300 constraints)
+- 1 Num2Bits(254) + Bits2Num(14) (~270 constraints)
+- 1 division proof + LessThan(14) (~40 constraints)
+- 2*N IsEqual (read + write multiplexers) (~8*N constraints)
+
+#### DeckCommitment(N)
+
+**File**: `circuits/utils/poseidon/deck_commitment.circom`
+
+Computes a commitment to a full deck using a recursive Poseidon hash chain:
+
+```
+h[0] = Poseidon(cards[0], cards[1])
+h[i] = Poseidon(h[i-1], cards[i+1])   for i = 1..N-2
+out  = Poseidon(h[N-2], salt)
+```
+
+- **Constraints**: ~N * 300 (N Poseidon(2) hashes)
+
+### Note Structures
+
+```
+Deck Commitment  = DeckCommitment(deckCards[52], deckSalt)
+                 = Recursive Poseidon chain of 52 cards + salt
+
+Draw Commitment  = Poseidon(drawnCard, drawIndex, gameId, handSalt)
+                 = Poseidon(4 inputs)
+
+Player Commitment = Poseidon(pkX, pkY, gameId)
+                  = Poseidon(3 inputs)
+```
+
+### Signal Specification
+
+#### Public Inputs (5)
+
+| # | Signal | Type | Description |
+|---|--------|------|-------------|
+| 0 | `deckCommitment` | field | Hash commitment of the full shuffled deck |
+| 1 | `drawCommitment` | field | Commitment to the drawn card |
+| 2 | `drawIndex` | field | Position in deck to draw from (0-51) |
+| 3 | `gameId` | field | Game session identifier |
+| 4 | `playerCommitment` | field | Poseidon(pkX, pkY, gameId) |
+
+#### Private Inputs (59)
+
+| Signal | Description |
+|--------|-------------|
+| `playerPkX` | Player BabyJubJub public key X |
+| `playerPkY` | Player BabyJubJub public key Y |
+| `playerSk` | Player secret key |
+| `shuffleSeed` | Seed for Fisher-Yates shuffle |
+| `deckCards[52]` | The shuffled deck (all 52 card values) |
+| `drawnCard` | The drawn card value |
+| `handSalt` | Salt for draw commitment |
+| `deckSalt` | Salt for deck commitment |
+
+### Constraint Analysis
+
+| Metric | Value |
+|--------|-------|
+| Total constraints | 99,440 |
+| Total wires | 99,341 |
+| Public inputs | 5 |
+| Private inputs | 59 |
+
+### Constraint Breakdown
+
+| Component | Approx. Constraints |
+|-----------|-------------------|
+| ProofOfOwnership | ~4,800 |
+| Player commitment (Poseidon(3)) | ~300 |
+| FisherYatesShuffle(52) | ~50,000 |
+| DeckCommitment(52) | ~15,600 |
+| ArrayRead(52) | ~210 |
+| Draw commitment (Poseidon(4)) | ~300 |
+| Bound checks (2x LessThan(6)) | ~60 |
+
+### Circuit Flow
+
+```
+1. ownership = ProofOfOwnership(pk=[playerPkX, playerPkY], sk=playerSk)
+   → assert: ownership.valid === 1
+
+2. playerHash = Poseidon(playerPkX, playerPkY, gameId)
+   → assert: playerHash.out === playerCommitment
+
+3. shuffle = FisherYatesShuffle(52)(seed=shuffleSeed, verifyDeck=deckCards)
+   → assert: shuffle verification passes (internal equality constraints)
+
+4. deckHash = DeckCommitment(52)(cards=deckCards, salt=deckSalt)
+   → assert: deckHash.out === deckCommitment
+
+5. readCard = ArrayRead(52)(arr=deckCards, index=drawIndex)
+   → assert: readCard.out === drawnCard
+
+6. drawHash = Poseidon(drawnCard, drawIndex, gameId, handSalt)
+   → assert: drawHash.out === drawCommitment
+
+7. Bound checks:
+   → assert: drawIndex < 52  (LessThan(6))
+   → assert: drawnCard < 52  (LessThan(6))
+```
+
+### Fisher-Yates Shuffle Detail
+
+The shuffle uses Poseidon-based deterministic randomness with 14-bit extraction and modular arithmetic:
+
+| Step | Operation | Range |
+|------|-----------|-------|
+| Hash | `Poseidon(seed, stepIndex)` | Full field |
+| Extract | Lower 14 bits via `Num2Bits(254) → Bits2Num(14)` | 0–16383 |
+| Division | `quotient <-- randomVal \ divisor` | Witness |
+| Remainder | `j <-- randomVal % divisor` | 0 to divisor-1 |
+| Constrain | `quotient * divisor + j === randomVal` | Exact |
+| Bound | `LessThan(14): j < divisor` | Enforced |
+
+The variable-index swap uses two sets of N IsEqual multiplexers per step:
+1. **Read**: Select `deck[j]` from the array
+2. **Write**: Conditionally replace `deck[k]` with swapped values
+
+---
+
 ## Compilation Pipeline
 
 For each circuit, the build script (`scripts/compile-circuit.js`) executes:
@@ -335,7 +509,7 @@ Copy wasm/zkey/vkey to frontend/public/circuits/
 circuits/build/<circuit_name>/
 ├── <name>.r1cs              # Constraint system
 ├── <name>.sym               # Symbol table
-├── <name>.zkey              # Proving key (~10-20 MB)
+├── <name>.zkey              # Proving key (~10-20 MB; ~80 MB for card_draw)
 ├── <name>_vkey.json         # Verification key (~2 KB)
 └── <name>_js/
     └── <name>.wasm          # Witness generator (~1-2 MB)
