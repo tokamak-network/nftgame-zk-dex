@@ -27,6 +27,7 @@
    node scripts/compile-circuit.js private_nft_transfer
    node scripts/compile-circuit.js loot_box_open
    node scripts/compile-circuit.js gaming_item_trade
+   node scripts/compile-circuit.js card_draw
    ```
 4. **컨트랙트 컴파일**: `npx hardhat compile`
 
@@ -101,6 +102,24 @@ forge test --match-contract GamingItemTradeTest
 # 통합 테스트 - 실제 ZK 증명 (9개 테스트)
 npx hardhat test test/GamingItemTrade.integration.test.js
 ```
+
+#### F8: 카드 뽑기 검증
+
+```bash
+# 회로 단위 테스트 (14개 테스트)
+npx mocha test/circuits/card-draw.test.js --timeout 300000
+
+# 컨트랙트 단위 테스트 - Hardhat mock verifier (9개 테스트)
+npx hardhat test test/CardDraw.test.js
+
+# 컨트랙트 단위 테스트 - Foundry (퍼즈 포함 15개 테스트)
+forge test --match-contract CardDrawTest
+
+# 통합 테스트 - 실제 ZK 증명 (8개 테스트)
+npx hardhat test test/CardDraw.integration.test.js
+```
+
+> 참고: F8 회로 테스트는 대규모 Fisher-Yates 셔플 회로(약 10만 개의 제약 조건)로 인해 더 긴 타임아웃(~300초)이 필요합니다.
 
 ---
 
@@ -267,7 +286,7 @@ npx hardhat test test/GamingItemTrade.integration.test.js
 | Reject duplicate item registration | 게임별 등록 고유성 |
 | Allow same itemId in different games | 게임 생태계 격리 |
 | Emit ItemRegistered event | 올바른 인자를 가진 이벤트 발생 |
-| Trade item with valid proof (mock) | 모의 검증기를 이용한 전송 흐름 |
+| Trade item with valid proof (mock) | 전송 흐름 검증 |
 | Trade item as gift (paymentNoteHash = 0) | 선물 모드 지원 |
 | Reject transfer with used nullifier | 이중 지불 방지 |
 | Reject trade of non-existent note | 노트 존재 확인 |
@@ -308,6 +327,76 @@ npx hardhat test test/GamingItemTrade.integration.test.js
 | Reject duplicate note hash | 노트 해시 고유성 |
 | Emit ItemRegistered event | 이벤트 발생 |
 | Emit ItemTraded event | 이벤트 발생 |
+
+---
+
+### F8: 카드 뽑기 검증 (Hardhat/Mocha 31개 + Foundry 15개)
+
+#### 회로 단위 테스트 (`test/circuits/card-draw.test.js`)
+
+| 테스트 | 카테고리 | 검증 내용 |
+|------|----------|-----------------|
+| Valid card draw proof | Happy path | Fisher-Yates 셔플을 포함한 전체 증명 라이프사이클 |
+| Correct public signals order | Happy path | 5개 신호 순서 확인 |
+| Different draw indices | Happy path | 0이 아닌 인덱스(25)에서의 드로우 |
+| Different seeds produce different shuffles | Happy path | 시드별 셔플 고유성 |
+| Wrong secret key | 보안 | 소유권 검증 |
+| Wrong shuffleSeed | 보안 | 셔플 무결성 (덱 불일치) |
+| Wrong drawnCard | 보안 | 카드-인덱스 바인딩 |
+| Wrong drawIndex | 보안 | 인덱스-카드 바인딩 |
+| Wrong gameId | 보안 | 게임 세션 격리 |
+| Wrong deckCommitment | 보안 | 덱 커밋먼트 무결성 |
+| Wrong drawCommitment | 보안 | 드로우 커밋먼트 무결성 |
+| Tampered public signal (deckCommitment) | 보안 | 증명-신호 바인딩 |
+| Tampered public signal (drawCommitment) | 보안 | 증명-신호 바인딩 |
+| Tampered public signal (playerCommitment) | 보안 | 증명-신호 바인딩 |
+
+#### 컨트랙트 단위 테스트 (`test/CardDraw.test.js`)
+
+| 테스트 | 검증 내용 |
+|------|-----------------|
+| Register a new deck | gameId를 포함한 기본 덱 등록 |
+| Reject duplicate game registration | 게임별 등록 고유성 |
+| Reject duplicate note hash | 노트 해시 고유성 |
+| Emit DeckRegistered event | 올바른 인자를 가진 이벤트 발생 |
+| Draw card with valid proof (mock) | 모의 검증기를 이용한 드로우 흐름, 덱은 Valid 유지 |
+| Reject duplicate drawIndex (same game) | 중복 드로우 방지 |
+| Allow multiple draws at different indices | 영속적 덱에서 다중 드로우 허용 |
+| Reject draw for unregistered game | 게임 등록 여부 확인 |
+| Emit CardDrawn event | 올바른 인자를 가진 이벤트 발생 |
+
+#### Foundry 테스트 (`test/foundry/CardDraw.t.sol`)
+
+| 테스트 | 카테고리 | 검증 내용 |
+|------|----------|-----------------|
+| test_RegisterDeck | Happy path | 기본 덱 노트 생성 |
+| test_RegisterDeck_EmitsEvent | 이벤트 | 올바른 인자를 가진 DeckRegistered 이벤트 |
+| test_RegisterDeck_EmitsNoteCreated | 이벤트 | 기본 컨트랙트의 NoteCreated 이벤트 |
+| test_RevertWhen_DuplicateGameRegistration | 보안 | 동일 gameId 거절 |
+| test_RevertWhen_DuplicateNoteHash | 보안 | 동일 noteHash 거절 |
+| testFuzz_RegisterDeck | 퍼즈 (256회) | 무작위 덱 등록 검증 |
+| test_DrawCard | Happy path | 전체 드로우 흐름, 덱은 Valid 유지 |
+| test_DrawCard_EmitsEvents | 이벤트 | NoteCreated + CardDrawn |
+| test_DrawMultipleCards | Happy path | 인덱스 0, 1, 2에서 3회 연속 드로우 |
+| test_RevertWhen_DuplicateDrawIndex | 보안 | 동일 drawIndex 재사용 차단 |
+| test_RevertWhen_UnregisteredGame | 보안 | 존재하지 않는 게임 거절 |
+| test_RevertWhen_WrongDeckCommitment | 보안 | 잘못된 덱 해시 거절 |
+| test_GetNoteState_Invalid | 뷰 | 기본 상태 확인 |
+| test_DrawnCards_False | 뷰 | 기본 드로우 상태 확인 |
+| testFuzz_DrawCard | 퍼즈 (256회) | 무작위 전체 드로우 흐름 |
+
+#### 통합 테스트 (`test/CardDraw.integration.test.js`)
+
+| 테스트 | 검증 내용 |
+|------|-----------------|
+| Register deck and draw card with real ZK proof | 전체 파이프라인 엔드투엔드 |
+| Draw at different index (10) | 0이 아닌 인덱스 지원 |
+| Multiple draws from same deck | 동일 deckSalt/shuffleSeed를 사용한 다중 드로우 |
+| Reject duplicate drawIndex | 온체인 drawIndex 추적 |
+| Reject duplicate deck registration | 등록 고유성 |
+| Reject duplicate note hash registration | 노트 해시 고유성 |
+| Emit DeckRegistered event | 이벤트 발생 |
+| Emit CardDrawn event | 이벤트 발생 |
 
 ---
 
@@ -365,6 +454,8 @@ forge test --fuzz-runs 1024
 | `testFuzz_OpenBox` | LootBoxOpen | boxHash, outcomeHash, vrfOutput, nullifier, boxId | 무작위 값에 대한 전체 개봉 흐름 |
 | `testFuzz_RegisterItem` | GamingItemTrade | noteHash, gameId, itemId | 유효한 입력에 대해 등록이 항상 작동함 |
 | `testFuzz_TradeItem` | GamingItemTrade | oldHash, newHash, paymentHash, nullifier, itemId | 무작위 값에 대한 전체 거래 흐름 |
+| `testFuzz_RegisterDeck` | CardDraw | deckCommitment, gameId | 유효한 입력에 대해 등록이 항상 작동함 |
+| `testFuzz_DrawCard` | CardDraw | deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment | 무작위 값에 대한 전체 드로우 흐름 |
 
 ---
 
@@ -383,6 +474,7 @@ forge test --fuzz-runs 1024
 node scripts/compile-circuit.js private_nft_transfer
 node scripts/compile-circuit.js loot_box_open
 node scripts/compile-circuit.js gaming_item_trade
+node scripts/compile-circuit.js card_draw    # 약 5-10분 소요 (10만 제약 조건)
 ```
 
 ### "HH701: Artifact not found" — 검증기 컨트랙트 컴파일 미비
@@ -399,9 +491,9 @@ npx hardhat compile
 npx mocha test/circuits/ --timeout 300000
 ```
 
-### 세 개의 Groth16Verifier 컨트랙트
+### 네 개의 Groth16Verifier 컨트랙트
 
-F1, F4, F5는 각각 `Groth16Verifier`라는 이름의 솔리디티 검증기를 생성합니다. Hardhat은 정규화된 이름(fully qualified names)으로 이를 처리합니다. 코드 예시:
+F1, F4, F5, F8은 각각 `Groth16Verifier`라는 이름의 솔리디티 검증기를 생성합니다. Hardhat은 정규화된 이름(fully qualified names)으로 이를 처리합니다. 코드 예시:
 ```javascript
 // 모호성을 피하기 위해 전체 경로 사용
 const Verifier = await ethers.getContractFactory(

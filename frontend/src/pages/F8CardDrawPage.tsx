@@ -15,8 +15,6 @@ import {
 } from "../lib/cardUtils";
 import { toBytes32 } from "../lib/crypto";
 import { encryptedNoteBytes } from "../lib/noteUtils";
-import type { ProofResult } from "../lib/types";
-
 type Step = "setup" | "register" | "draw" | "drawing";
 
 type DrawnCard = {
