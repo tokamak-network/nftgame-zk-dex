@@ -11,7 +11,8 @@ export function TxStatus({
 }) {
   if (error) {
     return (
-      <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-300">
+      <div className="glass-panel border border-red-500/50 p-3 text-sm text-red-400 font-body">
+        <span className="font-display text-xs tracking-wider text-red-500 mr-2">FAILED</span>
         Transaction failed: {error}
       </div>
     );
@@ -19,11 +20,13 @@ export function TxStatus({
 
   if (isPending && txHash) {
     return (
-      <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 flex items-center gap-3">
-        <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
+      <div className="glass-panel border border-neon-yellow/30 p-3 flex items-center gap-3"
+        style={{ animation: "neon-pulse 2s ease-in-out infinite", "--pulse-color": "#ffe600" } as React.CSSProperties}
+      >
+        <div className="w-4 h-4 border-2 border-neon-yellow border-t-transparent rounded-full animate-spin" />
         <div className="text-sm">
-          <p className="text-yellow-300">Awaiting confirmation...</p>
-          <p className="text-yellow-500 font-mono text-xs mt-1 break-all">
+          <p className="font-display text-xs tracking-wider neon-text-yellow">PENDING</p>
+          <p className="font-mono text-xs mt-1 text-gray-500 break-all">
             {txHash}
           </p>
         </div>
@@ -33,9 +36,13 @@ export function TxStatus({
 
   if (isConfirmed && txHash) {
     return (
-      <div className="bg-green-900/30 border border-green-700 rounded-lg p-3 text-sm">
-        <p className="text-green-300">Transaction confirmed</p>
-        <p className="text-green-500 font-mono text-xs mt-1 break-all">
+      <div className="glass-panel border border-neon-green/30 p-3 text-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="inline-block px-2 py-0.5 text-[10px] font-display font-bold tracking-widest bg-neon-green text-bg-deep rounded">
+            CONFIRMED
+          </span>
+        </div>
+        <p className="font-mono text-xs text-gray-500 break-all">
           {txHash}
         </p>
       </div>

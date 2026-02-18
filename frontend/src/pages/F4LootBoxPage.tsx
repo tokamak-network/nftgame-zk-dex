@@ -28,6 +28,7 @@ export function F4LootBoxPage() {
   const [itemIdInput, setItemIdInput] = useState("5001");
   const [setup, setSetup] = useState<F4SetupResult | null>(null);
   const [proofResult, setProofResult] = useState<ProofResult | null>(null);
+  const [revealed, setRevealed] = useState(false);
 
   // Registration tx state
   const [regTxHash, setRegTxHash] = useState<string | null>(null);
@@ -42,7 +43,12 @@ export function F4LootBoxPage() {
   const [txError, setTxError] = useState<string | null>(null);
 
   if (!isConnected) {
-    return <p className="text-gray-400">Connect your wallet to use this demo.</p>;
+    return (
+      <div className="glass-panel border border-border-dim p-8 text-center max-w-md mx-auto">
+        <p className="font-display text-sm tracking-wider neon-text-magenta">WALLET REQUIRED</p>
+        <p className="font-body text-gray-500 mt-2">Connect your wallet to use this demo.</p>
+      </div>
+    );
   }
 
   const stepStatus = (s: Step) => {
@@ -113,6 +119,8 @@ export function F4LootBoxPage() {
       await tx.wait();
       setTxConfirmed(true);
       setStep("done");
+      // Trigger reveal animation
+      setTimeout(() => setRevealed(true), 300);
     } catch (err) {
       setTxError(err instanceof Error ? err.message : "Open box failed");
     } finally {
@@ -121,55 +129,62 @@ export function F4LootBoxPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-6 stagger-in">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold mb-1">F4: Loot Box Open</h1>
-        <p className="text-sm text-gray-400">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="font-display text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 border border-neon-magenta rounded neon-text-magenta">
+            VRF
+          </span>
+        </div>
+        <h1 className="font-display text-2xl font-bold tracking-wider neon-text-magenta mb-1">
+          F4: Loot Box Open
+        </h1>
+        <p className="text-sm font-body text-gray-500">
           Open a loot box with verifiable randomness. A Poseidon VRF determines
           the item rarity, proven with a ZK circuit.
         </p>
       </div>
 
       {/* Step 1: Setup */}
-      <StepCard step={1} title="Configure Box" status={stepStatus("setup")}>
+      <StepCard step={1} title="Configure Box" status={stepStatus("setup")} accentColor="magenta">
         <div className="space-y-3">
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="text-sm text-gray-400 block mb-1">Box ID</label>
-              <input type="text" value={boxIdInput} onChange={(e) => setBoxIdInput(e.target.value)} className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm w-full" />
+              <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">Box ID</label>
+              <input type="text" value={boxIdInput} onChange={(e) => setBoxIdInput(e.target.value)} className="neon-input neon-input-magenta w-full" />
             </div>
             <div>
-              <label className="text-sm text-gray-400 block mb-1">Box Type</label>
-              <input type="text" value={boxTypeInput} onChange={(e) => setBoxTypeInput(e.target.value)} className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm w-full" />
+              <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">Box Type</label>
+              <input type="text" value={boxTypeInput} onChange={(e) => setBoxTypeInput(e.target.value)} className="neon-input neon-input-magenta w-full" />
             </div>
             <div>
-              <label className="text-sm text-gray-400 block mb-1">Item ID</label>
-              <input type="text" value={itemIdInput} onChange={(e) => setItemIdInput(e.target.value)} className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm w-full" />
+              <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">Item ID</label>
+              <input type="text" value={itemIdInput} onChange={(e) => setItemIdInput(e.target.value)} className="neon-input neon-input-magenta w-full" />
             </div>
           </div>
-          <div className="text-xs text-gray-500">
-            Thresholds: Legendary &lt; 100, Epic &lt; 500, Rare &lt; 2000, Common &lt; 10000
+          <div className="text-xs font-body text-gray-600">
+            Thresholds: <span className="neon-text-yellow">Legendary</span> &lt; 100, <span className="neon-text-purple">Epic</span> &lt; 500, <span className="neon-text-cyan">Rare</span> &lt; 2000, Common &lt; 10000
           </div>
-          <button onClick={handleSetup} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors">
+          <button onClick={handleSetup} className="neon-btn neon-btn-magenta">
             Generate Keypair & Compute VRF
           </button>
         </div>
       </StepCard>
 
       {/* Step 2: Register */}
-      <StepCard step={2} title="Register Box" status={stepStatus("register")}>
+      <StepCard step={2} title="Register Box" status={stepStatus("register")} accentColor="magenta">
         {setup && (
           <div className="space-y-3">
-            <div className="text-xs space-y-1 bg-gray-800/50 rounded-lg p-3">
-              <p><span className="text-gray-500">Box Commitment:</span> <span className="font-mono break-all">{toBytes32(setup.boxCommitment).slice(0, 22)}...</span></p>
+            <div className="text-xs space-y-1 glass-panel p-3">
+              <p><span className="text-gray-600 font-display tracking-wider">COMMITMENT</span> <span className="font-mono text-neon-magenta/70 break-all">{toBytes32(setup.boxCommitment).slice(0, 22)}...</span></p>
               <p>
-                <span className="text-gray-500">VRF Rarity:</span>{" "}
-                <span className={`font-bold ${RARITY_COLORS[setup.rarityLabel as RarityLabel] || "text-gray-400"}`}>
+                <span className="text-gray-600 font-display tracking-wider">RARITY</span>{" "}
+                <span className={`font-display font-bold ${RARITY_COLORS[setup.rarityLabel as RarityLabel] || "text-gray-400"}`}>
                   {setup.rarityLabel}
                 </span>
               </p>
             </div>
-            <button onClick={handleRegister} disabled={regPending} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50">
+            <button onClick={handleRegister} disabled={regPending} className="neon-btn neon-btn-magenta">
               {regPending ? "Registering..." : "Register Box On-Chain"}
             </button>
             <TxStatus txHash={regTxHash} isPending={regPending} isConfirmed={regConfirmed} error={regError} />
@@ -178,13 +193,13 @@ export function F4LootBoxPage() {
       </StepCard>
 
       {/* Step 3: Generate Proof */}
-      <StepCard step={3} title="Generate Open Proof" status={stepStatus("prove")}>
+      <StepCard step={3} title="Generate Open Proof" status={stepStatus("prove")} accentColor="magenta">
         <div className="space-y-3">
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-gray-500 font-body">
             The ZK circuit verifies the VRF chain: nullifier &rarr; vrfOutput &rarr; rarity
             determination, all without revealing the secret key.
           </p>
-          <button onClick={handleProve} disabled={proof.isGenerating} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50">
+          <button onClick={handleProve} disabled={proof.isGenerating} className="neon-btn neon-btn-magenta">
             {proof.isGenerating ? "Generating..." : "Generate ZK Proof"}
           </button>
           <ProofStatus isGenerating={proof.isGenerating} elapsed={proof.elapsed} error={proof.error} duration={proofResult?.duration} />
@@ -192,25 +207,33 @@ export function F4LootBoxPage() {
       </StepCard>
 
       {/* Step 4: Open Box */}
-      <StepCard step={4} title="Open Box" status={stepStatus("open")}>
+      <StepCard step={4} title="Open Box" status={stepStatus("open")} accentColor="magenta">
         <div className="space-y-3">
-          <button onClick={handleOpen} disabled={txPending} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50">
+          <button onClick={handleOpen} disabled={txPending} className="neon-btn neon-btn-magenta">
             {txPending ? "Opening..." : "Open Box On-Chain"}
           </button>
           <TxStatus txHash={txHash} isPending={txPending} isConfirmed={txConfirmed} error={txError} />
         </div>
       </StepCard>
 
-      {/* Result */}
+      {/* Result - Loot Reveal */}
       {step === "done" && setup && (
-        <div className="border border-green-600/50 bg-green-600/5 rounded-xl p-5">
-          <h3 className="font-semibold text-green-400 mb-3">Box Opened!</h3>
-          <div className="text-center py-4">
-            <p className={`text-3xl font-bold ${RARITY_COLORS[setup.rarityLabel as RarityLabel] || "text-gray-400"}`}>
-              {setup.rarityLabel}
-            </p>
-            <p className="text-sm text-gray-400 mt-2">
-              Item ID: {setup.itemId.toString()} | Rarity Level: {setup.itemRarity.toString()}
+        <div className="glass-panel border neon-border-magenta p-6 text-center scanline-overlay">
+          <h3 className="font-display font-bold tracking-wider neon-text-magenta mb-4">LOOT REVEALED</h3>
+          <div
+            className={`transition-all duration-700 ${revealed ? "scale-100 opacity-100" : "scale-50 opacity-0"}`}
+          >
+            <div className="inline-block glass-panel border border-border-dim p-8 holographic rounded-xl">
+              <p className={`font-display text-4xl font-black tracking-wider ${RARITY_COLORS[setup.rarityLabel as RarityLabel] || "text-gray-400"}`}
+                style={{ animation: "glow-breathe 2s ease-in-out infinite" }}
+              >
+                {setup.rarityLabel}
+              </p>
+            </div>
+            <p className="text-sm font-body text-gray-500 mt-4">
+              Item ID: <span className="font-mono text-gray-400">{setup.itemId.toString()}</span>
+              {" | "}
+              Rarity Level: <span className="font-mono text-gray-400">{setup.itemRarity.toString()}</span>
             </p>
           </div>
         </div>

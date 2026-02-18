@@ -51,9 +51,9 @@ export const RARITY_LABELS = ["Legendary", "Epic", "Rare", "Common"] as const;
 export type RarityLabel = (typeof RARITY_LABELS)[number];
 
 export const RARITY_COLORS: Record<RarityLabel, string> = {
-  Legendary: "text-yellow-400",
-  Epic: "text-purple-400",
-  Rare: "text-blue-400",
+  Legendary: "neon-text-yellow",
+  Epic: "neon-text-purple",
+  Rare: "neon-text-cyan",
   Common: "text-gray-400",
 };
 

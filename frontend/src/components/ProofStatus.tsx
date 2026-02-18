@@ -11,7 +11,8 @@ export function ProofStatus({
 }) {
   if (error) {
     return (
-      <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-300">
+      <div className="glass-panel border border-red-500/50 p-3 text-sm text-red-400 font-body">
+        <span className="font-display text-xs tracking-wider text-red-500 mr-2">ERROR</span>
         Proof failed: {error}
       </div>
     );
@@ -19,9 +20,9 @@ export function ProofStatus({
 
   if (isGenerating) {
     return (
-      <div className="bg-indigo-900/30 border border-indigo-700 rounded-lg p-3 flex items-center gap-3">
-        <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-        <span className="text-sm text-indigo-300">
+      <div className="glass-panel border border-neon-cyan/30 p-3 data-stream-bg flex items-center gap-3">
+        <div className="w-4 h-4 border-2 border-neon-cyan border-t-transparent rounded-full animate-spin" />
+        <span className="text-sm font-display tracking-wider neon-text-cyan">
           Generating ZK proof... {(elapsed / 1000).toFixed(1)}s
         </span>
       </div>
@@ -30,8 +31,11 @@ export function ProofStatus({
 
   if (duration != null) {
     return (
-      <div className="bg-green-900/30 border border-green-700 rounded-lg p-3 text-sm text-green-300">
-        Proof generated in {(duration / 1000).toFixed(1)}s
+      <div className="glass-panel border border-neon-green/30 p-3 text-sm">
+        <span className="font-display text-xs tracking-wider neon-text-green mr-2">VERIFIED</span>
+        <span className="font-body text-gray-300">
+          Proof generated in {(duration / 1000).toFixed(1)}s
+        </span>
       </div>
     );
   }

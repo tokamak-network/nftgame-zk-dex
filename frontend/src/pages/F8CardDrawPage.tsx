@@ -10,7 +10,6 @@ import {
   prepareF8Draw,
   generateF8Proof,
   getCardName,
-  getCardColor,
   type F8SetupResult,
 } from "../lib/cardUtils";
 import { toBytes32 } from "../lib/crypto";
@@ -48,7 +47,12 @@ export function F8CardDrawPage() {
   const [drawTxError, setDrawTxError] = useState<string | null>(null);
 
   if (!isConnected) {
-    return <p className="text-gray-400">Connect your wallet to use this demo.</p>;
+    return (
+      <div className="glass-panel border border-border-dim p-8 text-center max-w-md mx-auto">
+        <p className="font-display text-sm tracking-wider neon-text-green">WALLET REQUIRED</p>
+        <p className="font-body text-gray-500 mt-2">Connect your wallet to use this demo.</p>
+      </div>
+    );
   }
 
   const stepStatus = (s: Step) => {
@@ -135,42 +139,55 @@ export function F8CardDrawPage() {
     }
   }
 
+  // Determine if a card is red (hearts/diamonds)
+  const isRedCard = (card: number) => {
+    const suit = Math.floor(card / 13);
+    return suit === 1 || suit === 2; // hearts or diamonds
+  };
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-6 stagger-in">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold mb-1">F8: Card Draw</h1>
-        <p className="text-sm text-gray-400">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="font-display text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 border border-neon-green rounded neon-text-green">
+            SHUFFLE
+          </span>
+        </div>
+        <h1 className="font-display text-2xl font-bold tracking-wider neon-text-green mb-1">
+          F8: Card Draw
+        </h1>
+        <p className="text-sm font-body text-gray-500">
           Provably fair card game. A Fisher-Yates shuffle is verified in a 99K-constraint
           circuit. Each draw takes ~30 seconds for proof generation.
         </p>
       </div>
 
       {/* Step 1: Setup */}
-      <StepCard step={1} title="Setup Game" status={stepStatus("setup")}>
+      <StepCard step={1} title="Setup Game" status={stepStatus("setup")} accentColor="green">
         <div className="space-y-3">
           <div>
-            <label className="text-sm text-gray-400 block mb-1">Game ID</label>
-            <input type="text" value={gameIdInput} onChange={(e) => setGameIdInput(e.target.value)} className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm w-full" />
+            <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">Game ID</label>
+            <input type="text" value={gameIdInput} onChange={(e) => setGameIdInput(e.target.value)} className="neon-input neon-input-green w-full" />
           </div>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs font-body text-gray-600">
             This will generate a keypair, shuffle a 52-card deck using Fisher-Yates
             with Poseidon VRF, and compute a deck commitment.
           </p>
-          <button onClick={handleSetup} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors">
+          <button onClick={handleSetup} className="neon-btn neon-btn-green">
             Setup Game
           </button>
         </div>
       </StepCard>
 
       {/* Step 2: Register Deck */}
-      <StepCard step={2} title="Register Deck" status={stepStatus("register")}>
+      <StepCard step={2} title="Register Deck" status={stepStatus("register")} accentColor="green">
         {game && (
           <div className="space-y-3">
-            <div className="text-xs space-y-1 bg-gray-800/50 rounded-lg p-3">
-              <p><span className="text-gray-500">Deck Commitment:</span> <span className="font-mono break-all">{toBytes32(game.deckCommitment).slice(0, 22)}...</span></p>
-              <p><span className="text-gray-500">Player Commitment:</span> <span className="font-mono break-all">{toBytes32(game.playerCommitment).slice(0, 22)}...</span></p>
+            <div className="text-xs space-y-1 glass-panel p-3">
+              <p><span className="text-gray-600 font-display tracking-wider">DECK</span> <span className="font-mono text-neon-green/70 break-all">{toBytes32(game.deckCommitment).slice(0, 22)}...</span></p>
+              <p><span className="text-gray-600 font-display tracking-wider">PLAYER</span> <span className="font-mono text-neon-green/70 break-all">{toBytes32(game.playerCommitment).slice(0, 22)}...</span></p>
             </div>
-            <button onClick={handleRegister} disabled={regPending} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50">
+            <button onClick={handleRegister} disabled={regPending} className="neon-btn neon-btn-green">
               {regPending ? "Registering..." : "Register Deck On-Chain"}
             </button>
             <TxStatus txHash={regTxHash} isPending={regPending} isConfirmed={regConfirmed} error={regError} />
@@ -179,21 +196,42 @@ export function F8CardDrawPage() {
       </StepCard>
 
       {/* Step 3: Draw Cards */}
-      <StepCard step={3} title="Draw Cards" status={stepStatus("draw")}>
+      <StepCard step={3} title="Draw Cards" status={stepStatus("draw")} accentColor="green">
         <div className="space-y-4">
-          {/* Hand display */}
+          {/* Hand display - Fan arrangement */}
           {drawnCards.length > 0 && (
             <div>
-              <p className="text-sm text-gray-400 mb-2">Your hand:</p>
-              <div className="flex flex-wrap gap-2">
-                {drawnCards.map((card) => (
-                  <div
-                    key={card.index}
-                    className={`bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-center ${getCardColor(card.card)}`}
-                  >
-                    <span className="text-lg font-bold">{card.name}</span>
-                  </div>
-                ))}
+              <p className="text-xs font-display tracking-wider text-gray-500 mb-3">YOUR HAND</p>
+              <div className="flex justify-center py-4">
+                <div className="relative" style={{ height: "140px", width: `${Math.min(drawnCards.length * 50 + 70, 500)}px` }}>
+                  {drawnCards.map((card, i) => {
+                    const total = drawnCards.length;
+                    const fanAngle = Math.min(5, 30 / total);
+                    const rotation = (i - (total - 1) / 2) * fanAngle;
+                    const yOffset = Math.abs(i - (total - 1) / 2) * 3;
+                    const red = isRedCard(card.card);
+
+                    return (
+                      <div
+                        key={card.index}
+                        className="playing-card absolute w-[70px] h-[100px] flex flex-col items-center justify-center transition-all duration-500 hover:!-translate-y-4 hover:!z-50 cursor-pointer"
+                        style={{
+                          left: `${i * Math.min(50, 450 / total)}px`,
+                          transform: `rotate(${rotation}deg) translateY(${yOffset}px)`,
+                          zIndex: i + 1,
+                          borderColor: red ? "rgba(255, 0, 170, 0.3)" : "rgba(0, 240, 255, 0.3)",
+                        }}
+                        title={`Draw #${card.index + 1}`}
+                      >
+                        <span
+                          className={`font-display text-lg font-bold ${red ? "neon-text-magenta" : "neon-text-cyan"}`}
+                        >
+                          {card.name}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
@@ -204,12 +242,12 @@ export function F8CardDrawPage() {
               <button
                 onClick={handleDraw}
                 disabled={step === "drawing"}
-                className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50"
+                className="neon-btn neon-btn-green"
               >
                 {step === "drawing" ? "Drawing..." : `Draw Card #${nextDrawIndex + 1}`}
               </button>
               {nextDrawIndex === 0 && (
-                <p className="text-xs text-yellow-400">
+                <p className="text-xs font-body neon-text-yellow">
                   Warning: Each draw generates a 99K-constraint proof (~30s)
                 </p>
               )}

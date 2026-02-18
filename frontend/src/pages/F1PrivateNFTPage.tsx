@@ -44,7 +44,12 @@ export function F1PrivateNFTPage() {
   const [newNoteState, setNewNoteState] = useState<string | null>(null);
 
   if (!isConnected) {
-    return <p className="text-gray-400">Connect your wallet to use this demo.</p>;
+    return (
+      <div className="glass-panel border border-border-dim p-8 text-center max-w-md mx-auto">
+        <p className="font-display text-sm tracking-wider neon-text-cyan">WALLET REQUIRED</p>
+        <p className="font-body text-gray-500 mt-2">Connect your wallet to use this demo.</p>
+      </div>
+    );
   }
 
   const stepStatus = (s: Step) => {
@@ -130,54 +135,61 @@ export function F1PrivateNFTPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-6 stagger-in">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold mb-1">F1: Private NFT Transfer</h1>
-        <p className="text-sm text-gray-400">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="font-display text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 border border-neon-cyan rounded neon-text-cyan">
+            STEALTH
+          </span>
+        </div>
+        <h1 className="font-display text-2xl font-bold tracking-wider neon-text-cyan mb-1">
+          F1: Private NFT Transfer
+        </h1>
+        <p className="text-sm font-body text-gray-500">
           Transfer NFT ownership privately. A ZK proof verifies the old owner
           knows the secret key without revealing it.
         </p>
       </div>
 
       {/* Step 1: Setup */}
-      <StepCard step={1} title="Setup Keypairs" status={stepStatus("setup")}>
+      <StepCard step={1} title="Setup Keypairs" status={stepStatus("setup")} accentColor="cyan">
         <div className="space-y-3">
           <div>
-            <label className="text-sm text-gray-400 block mb-1">NFT ID</label>
+            <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">NFT ID</label>
             <input
               type="text"
               value={nftIdInput}
               onChange={(e) => setNftIdInput(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm w-full"
+              className="neon-input w-full"
             />
           </div>
           <div>
-            <label className="text-sm text-gray-400 block mb-1">
+            <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">
               Collection Address (numeric)
             </label>
             <input
               type="text"
               value={collectionInput}
               onChange={(e) => setCollectionInput(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm w-full"
+              className="neon-input w-full"
             />
           </div>
-          <button onClick={handleSetup} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors">
+          <button onClick={handleSetup} className="neon-btn neon-btn-cyan">
             Generate Keypairs
           </button>
         </div>
       </StepCard>
 
       {/* Step 2: Register */}
-      <StepCard step={2} title="Register NFT" status={stepStatus("register")}>
+      <StepCard step={2} title="Register NFT" status={stepStatus("register")} accentColor="cyan">
         {setup && (
           <div className="space-y-3">
-            <div className="text-xs space-y-1 bg-gray-800/50 rounded-lg p-3">
-              <p><span className="text-gray-500">Owner A PK:</span> <span className="font-mono break-all">{setup.oldOwner.pk.x.toString(16).slice(0, 16)}...</span></p>
-              <p><span className="text-gray-500">Owner B PK:</span> <span className="font-mono break-all">{setup.newOwner.pk.x.toString(16).slice(0, 16)}...</span></p>
-              <p><span className="text-gray-500">Note Hash:</span> <span className="font-mono break-all">{toBytes32(setup.oldNftHash).slice(0, 22)}...</span></p>
+            <div className="text-xs space-y-1 glass-panel p-3">
+              <p><span className="text-gray-600 font-display tracking-wider">OWNER_A</span> <span className="font-mono text-neon-cyan/70 break-all">{setup.oldOwner.pk.x.toString(16).slice(0, 16)}...</span></p>
+              <p><span className="text-gray-600 font-display tracking-wider">OWNER_B</span> <span className="font-mono text-neon-cyan/70 break-all">{setup.newOwner.pk.x.toString(16).slice(0, 16)}...</span></p>
+              <p><span className="text-gray-600 font-display tracking-wider">HASH</span> <span className="font-mono text-neon-cyan/70 break-all">{toBytes32(setup.oldNftHash).slice(0, 22)}...</span></p>
             </div>
-            <button onClick={handleRegister} disabled={regPending} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50">
+            <button onClick={handleRegister} disabled={regPending} className="neon-btn neon-btn-cyan">
               {regPending ? "Registering..." : "Register NFT On-Chain"}
             </button>
             <TxStatus txHash={regTxHash} isPending={regPending} isConfirmed={regConfirmed} error={regError} />
@@ -186,13 +198,13 @@ export function F1PrivateNFTPage() {
       </StepCard>
 
       {/* Step 3: Generate Proof */}
-      <StepCard step={3} title="Generate Transfer Proof" status={stepStatus("prove")}>
+      <StepCard step={3} title="Generate Transfer Proof" status={stepStatus("prove")} accentColor="cyan">
         <div className="space-y-3">
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-gray-500 font-body">
             The ZK circuit proves Owner A knows the secret key for the old note
             and correctly computes the new note for Owner B.
           </p>
-          <button onClick={handleProve} disabled={proof.isGenerating} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50">
+          <button onClick={handleProve} disabled={proof.isGenerating} className="neon-btn neon-btn-cyan">
             {proof.isGenerating ? "Generating..." : "Generate ZK Proof"}
           </button>
           <ProofStatus isGenerating={proof.isGenerating} elapsed={proof.elapsed} error={proof.error} duration={proofResult?.duration} />
@@ -200,9 +212,9 @@ export function F1PrivateNFTPage() {
       </StepCard>
 
       {/* Step 4: Submit Transfer */}
-      <StepCard step={4} title="Submit Transfer" status={stepStatus("transfer")}>
+      <StepCard step={4} title="Submit Transfer" status={stepStatus("transfer")} accentColor="cyan">
         <div className="space-y-3">
-          <button onClick={handleTransfer} disabled={txPending} className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50">
+          <button onClick={handleTransfer} disabled={txPending} className="neon-btn neon-btn-cyan">
             {txPending ? "Submitting..." : "Transfer NFT On-Chain"}
           </button>
           <TxStatus txHash={txHash} isPending={txPending} isConfirmed={txConfirmed} error={txError} />
@@ -211,18 +223,18 @@ export function F1PrivateNFTPage() {
 
       {/* Result */}
       {step === "done" && setup && (
-        <div className="border border-green-600/50 bg-green-600/5 rounded-xl p-5">
-          <h3 className="font-semibold text-green-400 mb-3">Transfer Complete</h3>
-          <div className="text-sm space-y-2">
+        <div className="glass-panel border neon-border-green p-5">
+          <h3 className="font-display font-bold tracking-wider neon-text-green mb-3">TRANSFER COMPLETE</h3>
+          <div className="text-sm space-y-2 font-body">
             <p>
-              <span className="text-gray-400">Old Note:</span>{" "}
-              <span className="font-mono text-xs">{toBytes32(setup.oldNftHash).slice(0, 22)}...</span>{" "}
-              <span className={oldNoteState === "Spent" ? "text-red-400" : "text-gray-400"}>({oldNoteState})</span>
+              <span className="text-gray-500">Old Note:</span>{" "}
+              <span className="font-mono text-xs text-gray-400">{toBytes32(setup.oldNftHash).slice(0, 22)}...</span>{" "}
+              <span className={oldNoteState === "Spent" ? "neon-text-magenta" : "text-gray-500"}>({oldNoteState})</span>
             </p>
             <p>
-              <span className="text-gray-400">New Note:</span>{" "}
-              <span className="font-mono text-xs">{toBytes32(setup.newNftHash).slice(0, 22)}...</span>{" "}
-              <span className={newNoteState === "Valid" ? "text-green-400" : "text-gray-400"}>({newNoteState})</span>
+              <span className="text-gray-500">New Note:</span>{" "}
+              <span className="font-mono text-xs text-gray-400">{toBytes32(setup.newNftHash).slice(0, 22)}...</span>{" "}
+              <span className={newNoteState === "Valid" ? "neon-text-green" : "text-gray-500"}>({newNoteState})</span>
             </p>
           </div>
         </div>
