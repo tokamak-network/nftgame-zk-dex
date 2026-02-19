@@ -488,7 +488,7 @@ npx hardhat compile
 
 회로 증명 생성은 느릴 수 있습니다. 타임아웃 시간을 늘리세요:
 ```bash
-npx mocha test/circuits/ --timeout 300000
+npx mocha test/circuits/ --timeout 300000 --exit
 ```
 
 ### 네 개의 Groth16Verifier 컨트랙트

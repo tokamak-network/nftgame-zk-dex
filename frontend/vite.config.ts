@@ -7,6 +7,18 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  define: {
+    global: 'globalThis',
+  },
+  resolve: {
+    alias: {
+      '@': '/src',
+      buffer: 'buffer',
+    },
+  },
+  optimizeDeps: {
+    include: ['buffer'],
+  },
   server: {
     port: 3000,
     headers: {
@@ -23,10 +35,5 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
-  },
-  resolve: {
-    alias: {
-      '@': '/src',
-    },
   },
 })

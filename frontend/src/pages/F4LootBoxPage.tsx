@@ -12,6 +12,7 @@ import {
   type F4SetupResult,
 } from "../lib/noteUtils";
 import { toBytes32 } from "../lib/crypto";
+import { addNote } from "../lib/noteStore";
 import { RARITY_COLORS, type RarityLabel } from "../lib/types";
 import type { ProofResult } from "../lib/types";
 
@@ -118,6 +119,21 @@ export function F4LootBoxPage() {
       setTxHash(tx.hash);
       await tx.wait();
       setTxConfirmed(true);
+
+      // Save outcome note to local storage
+      addNote({
+        hash: toBytes32(setup.outcomeCommitment),
+        contractName: "LootBoxOpen",
+        type: "lootbox",
+        label: `Loot Box #${setup.boxId.toString()} — ${setup.rarityLabel}`,
+        metadata: {
+          boxId: setup.boxId.toString(),
+          rarity: setup.rarityLabel,
+          itemId: setup.itemId.toString(),
+          txHash: tx.hash,
+        },
+      });
+
       setStep("done");
       // Trigger reveal animation
       setTimeout(() => setRevealed(true), 300);

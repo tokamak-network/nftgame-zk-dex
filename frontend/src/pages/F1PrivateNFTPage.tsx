@@ -12,6 +12,7 @@ import {
   type F1SetupResult,
 } from "../lib/noteUtils";
 import { toBytes32 } from "../lib/crypto";
+import { addNote } from "../lib/noteStore";
 import type { ProofResult } from "../lib/types";
 
 type Step = "setup" | "register" | "prove" | "transfer" | "done";
@@ -125,6 +126,19 @@ export function F1PrivateNFTPage() {
       const stateLabels = ["Invalid", "Valid", "Spent"];
       setOldNoteState(stateLabels[Number(oldState)]);
       setNewNoteState(stateLabels[Number(newState)]);
+
+      // Save new note to local storage
+      addNote({
+        hash: toBytes32(setup.newNftHash),
+        contractName: "PrivateNFT",
+        type: "nft",
+        label: `NFT #${setup.nftId.toString()}`,
+        metadata: {
+          nftId: setup.nftId.toString(),
+          collection: setup.collectionAddress.toString(),
+          txHash: tx.hash,
+        },
+      });
 
       setStep("done");
     } catch (err) {

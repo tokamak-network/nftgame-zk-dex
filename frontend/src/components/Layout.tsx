@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { path: "/f4-loot-box", label: "F4: Loot Box", icon: "◈", color: "neon-text-magenta" },
   { path: "/f5-item-trade", label: "F5: Item Trade", icon: "◈", color: "neon-text-orange" },
   { path: "/f8-card-draw", label: "F8: Card Draw", icon: "◈", color: "neon-text-green" },
+  { path: "/my-notes", label: "My Notes", icon: "◇", color: "neon-text-yellow" },
 ];
 
 export function Layout() {

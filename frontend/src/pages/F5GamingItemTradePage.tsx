@@ -12,6 +12,7 @@ import {
   type F5SetupResult,
 } from "../lib/noteUtils";
 import { toBytes32 } from "../lib/crypto";
+import { addNote } from "../lib/noteStore";
 import type { ProofResult } from "../lib/types";
 
 type Step = "setup" | "register" | "configure" | "prove" | "trade" | "done";
@@ -142,6 +143,20 @@ export function F5GamingItemTradePage() {
       const stateLabels = ["Invalid", "Valid", "Spent"];
       setOldNoteState(stateLabels[Number(oldState)]);
       setNewNoteState(stateLabels[Number(newState)]);
+
+      // Save new item note to local storage
+      addNote({
+        hash: toBytes32(setup.newItemHash),
+        contractName: "GamingItemTrade",
+        type: "item",
+        label: `Item #${setup.itemId.toString()} (Game ${setup.gameId.toString()})`,
+        metadata: {
+          itemId: setup.itemId.toString(),
+          gameId: setup.gameId.toString(),
+          mode: isGift ? "Gift" : `Paid (${priceInput})`,
+          txHash: tx.hash,
+        },
+      });
 
       setStep("done");
     } catch (err) {

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, createContext, useContext, type ReactNode } from 'react';
 import { BrowserProvider, JsonRpcSigner } from 'ethers';
 
 interface WalletState {
@@ -9,7 +9,14 @@ interface WalletState {
   isConnected: boolean;
 }
 
-export function useWallet() {
+interface WalletContextValue extends WalletState {
+  connect: () => Promise<void>;
+  disconnect: () => void;
+}
+
+const WalletContext = createContext<WalletContextValue | null>(null);
+
+export function WalletProvider({ children }: { children: ReactNode }) {
   const [wallet, setWallet] = useState<WalletState>({
     provider: null,
     signer: null,
@@ -53,5 +60,17 @@ export function useWallet() {
     });
   }, []);
 
-  return { ...wallet, connect, disconnect };
+  return (
+    <WalletContext.Provider value={{ ...wallet, connect, disconnect }}>
+      {children}
+    </WalletContext.Provider>
+  );
+}
+
+export function useWallet() {
+  const ctx = useContext(WalletContext);
+  if (!ctx) {
+    throw new Error('useWallet must be used within a WalletProvider');
+  }
+  return ctx;
 }

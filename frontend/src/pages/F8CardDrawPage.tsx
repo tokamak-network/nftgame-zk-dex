@@ -13,6 +13,7 @@ import {
   type F8SetupResult,
 } from "../lib/cardUtils";
 import { toBytes32 } from "../lib/crypto";
+import { addNote } from "../lib/noteStore";
 import { encryptedNoteBytes } from "../lib/noteUtils";
 type Step = "setup" | "register" | "draw" | "drawing";
 
@@ -130,6 +131,21 @@ export function F8CardDrawPage() {
         ...prev,
         { index: drawIndex, card: drawData.drawnCard, name: cardName, txHash: tx.hash },
       ]);
+
+      // Save drawn card note to local storage
+      addNote({
+        hash: toBytes32(drawData.drawCommitment),
+        contractName: "CardDraw",
+        type: "card",
+        label: `Card: ${cardName} (Game #${game.gameId.toString()})`,
+        metadata: {
+          gameId: game.gameId.toString(),
+          drawIndex: drawIndex.toString(),
+          card: cardName,
+          txHash: tx.hash,
+        },
+      });
+
       setNextDrawIndex(drawIndex + 1);
       setStep("draw");
     } catch (err) {
