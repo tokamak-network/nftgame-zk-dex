@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useWallet } from "../hooks/useWallet";
 import { useContract } from "../hooks/useContract";
-import { getNotes, removeNote, clearNotes, type StoredNote, type NoteType } from "../lib/noteStore";
+import { getNotes, removeNote, clearNotes, exportNotes, importNotes, type StoredNote, type NoteType } from "../lib/noteStore";
 
 const TYPE_CONFIG: Record<NoteType, { label: string; color: string; border: string; bg: string }> = {
   nft: { label: "NFT", color: "neon-text-cyan", border: "border-neon-cyan", bg: "bg-neon-cyan/10" },
@@ -27,6 +27,8 @@ export function MyNotesPage() {
   const [chainStates, setChainStates] = useState<ChainState>({});
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<NoteType | "all">("all");
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadNotes = useCallback(() => {
     setNotes(getNotes());
@@ -77,6 +79,37 @@ export function MyNotesPage() {
     clearNotes();
     loadNotes();
     setChainStates({});
+  }
+
+  function handleExport() {
+    const json = exportNotes();
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `neon-arena-notes-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const { added, skipped } = importNotes(reader.result as string);
+        setImportMsg(`+${added} added, ${skipped} duplicates skipped`);
+        loadNotes();
+        setTimeout(() => setImportMsg(null), 4000);
+      } catch {
+        setImportMsg("Invalid file format");
+        setTimeout(() => setImportMsg(null), 4000);
+      }
+    };
+    reader.readAsText(file);
+    // Reset so same file can be re-selected
+    e.target.value = "";
   }
 
   const filtered = filter === "all" ? notes : notes.filter((n) => n.type === filter);
@@ -229,6 +262,39 @@ export function MyNotesPage() {
           })}
         </div>
       )}
+
+      {/* Backup / Restore */}
+      <div className="glass-panel border border-border-dim p-4 space-y-3">
+        <p className="font-display text-xs font-bold tracking-wider text-gray-400">BACKUP / RESTORE</p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={handleExport}
+            disabled={notes.length === 0}
+            className="neon-btn neon-btn-cyan text-xs py-1.5 px-3"
+          >
+            Export JSON
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="neon-btn neon-btn-green text-xs py-1.5 px-3"
+          >
+            Import JSON
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            onChange={handleImport}
+            className="hidden"
+          />
+          {importMsg && (
+            <span className="font-body text-xs neon-text-yellow">{importMsg}</span>
+          )}
+        </div>
+        <p className="font-body text-[11px] text-gray-600">
+          Export your notes as a JSON file to back up. Import to restore on another browser or device.
+        </p>
+      </div>
 
       {/* Summary */}
       {notes.length > 0 && (

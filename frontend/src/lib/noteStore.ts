@@ -53,3 +53,39 @@ export function removeNote(id: string) {
 export function clearNotes() {
   localStorage.removeItem(STORAGE_KEY);
 }
+
+export function exportNotes(): string {
+  const notes = readAll();
+  return JSON.stringify({
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    notes,
+  }, null, 2);
+}
+
+export function importNotes(json: string): { added: number; skipped: number } {
+  const data = JSON.parse(json);
+  const incoming: StoredNote[] = data.notes ?? data;
+  const existing = readAll();
+  const existingHashes = new Set(existing.map((n) => n.hash));
+
+  let added = 0;
+  let skipped = 0;
+
+  for (const note of incoming) {
+    if (existingHashes.has(note.hash)) {
+      skipped++;
+      continue;
+    }
+    existing.push({
+      ...note,
+      id: note.id || crypto.randomUUID(),
+      createdAt: note.createdAt || Date.now(),
+    });
+    existingHashes.add(note.hash);
+    added++;
+  }
+
+  writeAll(existing);
+  return { added, skipped };
+}
