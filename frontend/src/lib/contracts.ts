@@ -7,12 +7,14 @@ import PrivateNFTAbi from "../abi/PrivateNFT.json";
 import LootBoxOpenAbi from "../abi/LootBoxOpen.json";
 import GamingItemTradeAbi from "../abi/GamingItemTrade.json";
 import CardDrawAbi from "../abi/CardDraw.json";
+import MockERC20Abi from "../abi/MockERC20.json";
 
 const ABI_MAP: Record<ContractName, unknown[]> = {
   PrivateNFT: PrivateNFTAbi,
   LootBoxOpen: LootBoxOpenAbi,
   GamingItemTrade: GamingItemTradeAbi,
   CardDraw: CardDrawAbi,
+  MockERC20: MockERC20Abi,
 };
 
 const ADDRESS_MAP: Record<ContractName, string> = {
@@ -20,6 +22,7 @@ const ADDRESS_MAP: Record<ContractName, string> = {
   LootBoxOpen: (deployedAddresses as Record<string, string>).lootBoxOpen,
   GamingItemTrade: (deployedAddresses as Record<string, string>).gamingItemTrade,
   CardDraw: (deployedAddresses as Record<string, string>).cardDraw,
+  MockERC20: (deployedAddresses as Record<string, string>).mockERC20,
 };
 
 /**

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { ethers } from "ethers";
 import { StepCard } from "../components/StepCard";
 import { ProofStatus } from "../components/ProofStatus";
 import { TxStatus } from "../components/TxStatus";
@@ -16,20 +17,33 @@ import { addNote } from "../lib/noteStore";
 import { RARITY_COLORS, type RarityLabel } from "../lib/types";
 import type { ProofResult } from "../lib/types";
 
-type Step = "setup" | "register" | "prove" | "open" | "done";
+type Step = "purchase" | "setup" | "register" | "prove" | "open" | "done";
 
 export function F4LootBoxPage() {
-  const { signer, isConnected } = useWallet();
+  const { signer, address, isConnected } = useWallet();
   const contract = useContract("LootBoxOpen", signer);
+  const tokenContract = useContract("MockERC20", signer);
   const proof = useProofGeneration();
 
-  const [step, setStep] = useState<Step>("setup");
-  const [boxIdInput, setBoxIdInput] = useState("1");
+  const [step, setStep] = useState<Step>("purchase");
   const [boxTypeInput, setBoxTypeInput] = useState("0");
   const [itemIdInput, setItemIdInput] = useState("5001");
+  const [mintedBoxId, setMintedBoxId] = useState<bigint | null>(null);
   const [setup, setSetup] = useState<F4SetupResult | null>(null);
   const [proofResult, setProofResult] = useState<ProofResult | null>(null);
   const [revealed, setRevealed] = useState(false);
+
+  // Token balance
+  const [tokenBalance, setTokenBalance] = useState<string>("0");
+  const [boxPrice, setBoxPrice] = useState<string>("0");
+  const [myBoxCount, setMyBoxCount] = useState(0);
+
+  // Purchase tx state
+  const [approving, setApproving] = useState(false);
+  const [minting, setMinting] = useState(false);
+  const [purchaseError, setPurchaseError] = useState<string | null>(null);
+  const [purchaseTxHash, setPurchaseTxHash] = useState<string | null>(null);
+  const [purchaseConfirmed, setPurchaseConfirmed] = useState(false);
 
   // Registration tx state
   const [regTxHash, setRegTxHash] = useState<string | null>(null);
@@ -43,6 +57,27 @@ export function F4LootBoxPage() {
   const [txConfirmed, setTxConfirmed] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
 
+  // Load token balance and box info
+  const refreshInfo = useCallback(async () => {
+    if (!tokenContract || !contract || !address) return;
+    try {
+      const bal = await tokenContract.balanceOf(address);
+      setTokenBalance(ethers.formatEther(bal));
+
+      const price = await contract.boxPrice();
+      setBoxPrice(ethers.formatEther(price));
+
+      const boxes = await contract.getMyBoxes(address);
+      setMyBoxCount(boxes.length);
+    } catch {
+      // ignore
+    }
+  }, [tokenContract, contract, address]);
+
+  useEffect(() => {
+    refreshInfo();
+  }, [refreshInfo]);
+
   if (!isConnected) {
     return (
       <div className="glass-panel border border-border-dim p-8 text-center max-w-md mx-auto">
@@ -52,18 +87,64 @@ export function F4LootBoxPage() {
     );
   }
 
+  const stepOrder: Step[] = ["purchase", "setup", "register", "prove", "open", "done"];
   const stepStatus = (s: Step) => {
-    const order: Step[] = ["setup", "register", "prove", "open", "done"];
-    const current = order.indexOf(step);
-    const target = order.indexOf(s);
+    const current = stepOrder.indexOf(step);
+    const target = stepOrder.indexOf(s);
     if (target < current) return "complete" as const;
     if (target === current) return "active" as const;
     return "disabled" as const;
   };
 
+  async function handlePurchase() {
+    if (!contract || !tokenContract) return;
+    setPurchaseError(null);
+    try {
+      // Step 1: Approve
+      setApproving(true);
+      const price = await contract.boxPrice();
+      const approveTx = await tokenContract.approve(
+        await contract.getAddress(),
+        price,
+      );
+      await approveTx.wait();
+      setApproving(false);
+
+      // Step 2: Mint
+      setMinting(true);
+      const mintTx = await contract.mintBox(BigInt(boxTypeInput));
+      setPurchaseTxHash(mintTx.hash);
+      const receipt = await mintTx.wait();
+
+      // Extract boxId from BoxMinted event
+      const iface = contract.interface;
+      for (const log of receipt.logs) {
+        try {
+          const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
+          if (parsed && parsed.name === "BoxMinted") {
+            setMintedBoxId(parsed.args.boxId);
+            break;
+          }
+        } catch {
+          // skip non-matching logs
+        }
+      }
+
+      setPurchaseConfirmed(true);
+      await refreshInfo();
+      setStep("setup");
+    } catch (err) {
+      setPurchaseError(err instanceof Error ? err.message : "Purchase failed");
+    } finally {
+      setApproving(false);
+      setMinting(false);
+    }
+  }
+
   async function handleSetup() {
+    if (mintedBoxId === null) return;
     const result = await setupF4BoxOpen(
-      BigInt(boxIdInput),
+      mintedBoxId,
       BigInt(boxTypeInput),
       BigInt(itemIdInput),
     );
@@ -120,7 +201,6 @@ export function F4LootBoxPage() {
       await tx.wait();
       setTxConfirmed(true);
 
-      // Save outcome note to local storage
       addNote({
         hash: toBytes32(setup.outcomeCommitment),
         contractName: "LootBoxOpen",
@@ -135,7 +215,6 @@ export function F4LootBoxPage() {
       });
 
       setStep("done");
-      // Trigger reveal animation
       setTimeout(() => setRevealed(true), 300);
     } catch (err) {
       setTxError(err instanceof Error ? err.message : "Open box failed");
@@ -156,22 +235,70 @@ export function F4LootBoxPage() {
           F4: Loot Box Open
         </h1>
         <p className="text-sm font-body text-gray-500">
-          Open a loot box with verifiable randomness. A Poseidon VRF determines
-          the item rarity, proven with a ZK circuit.
+          Purchase a loot box with TON tokens, then open it with verifiable randomness.
         </p>
       </div>
 
-      {/* Step 1: Setup */}
-      <StepCard step={1} title="Configure Box" status={stepStatus("setup")} accentColor="magenta">
+      {/* Token Balance Bar */}
+      <div className="glass-panel border border-border-dim p-3 flex items-center justify-between text-xs font-display tracking-wider">
+        <div className="flex items-center gap-4">
+          <span className="text-gray-500">TON BALANCE</span>
+          <span className="neon-text-cyan font-bold">{parseFloat(tokenBalance).toFixed(2)} TON</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="text-gray-500">BOX PRICE</span>
+          <span className="neon-text-magenta font-bold">{parseFloat(boxPrice).toFixed(2)} TON</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="text-gray-500">MY BOXES</span>
+          <span className="neon-text-green font-bold">{myBoxCount}</span>
+        </div>
+      </div>
+
+      {/* Step 1: Purchase Box */}
+      <StepCard step={1} title="Purchase Box" status={stepStatus("purchase")} accentColor="magenta">
         <div className="space-y-3">
-          <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">Box Type</label>
+            <select
+              value={boxTypeInput}
+              onChange={(e) => setBoxTypeInput(e.target.value)}
+              className="neon-input neon-input-magenta w-full"
+            >
+              <option value="0">Standard Box</option>
+              <option value="1">Premium Box</option>
+              <option value="2">Legendary Box</option>
+            </select>
+          </div>
+          <button
+            onClick={handlePurchase}
+            disabled={approving || minting}
+            className="neon-btn neon-btn-magenta"
+          >
+            {approving ? "Approving TON..." : minting ? "Minting Box..." : `Buy Box (${parseFloat(boxPrice).toFixed(0)} TON)`}
+          </button>
+          <TxStatus txHash={purchaseTxHash} isPending={approving || minting} isConfirmed={purchaseConfirmed} error={purchaseError} />
+          {mintedBoxId !== null && purchaseConfirmed && (
+            <div className="text-xs glass-panel p-2 text-center">
+              <span className="text-gray-500 font-display tracking-wider">BOX ID ASSIGNED</span>{" "}
+              <span className="font-mono neon-text-cyan font-bold">#{mintedBoxId.toString()}</span>
+            </div>
+          )}
+        </div>
+      </StepCard>
+
+      {/* Step 2: Configure Box */}
+      <StepCard step={2} title="Configure Box" status={stepStatus("setup")} accentColor="magenta">
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">Box ID</label>
-              <input type="text" value={boxIdInput} onChange={(e) => setBoxIdInput(e.target.value)} className="neon-input neon-input-magenta w-full" />
-            </div>
-            <div>
-              <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">Box Type</label>
-              <input type="text" value={boxTypeInput} onChange={(e) => setBoxTypeInput(e.target.value)} className="neon-input neon-input-magenta w-full" />
+              <input
+                type="text"
+                value={mintedBoxId !== null ? mintedBoxId.toString() : "—"}
+                readOnly
+                className="neon-input neon-input-magenta w-full opacity-60 cursor-not-allowed"
+              />
             </div>
             <div>
               <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">Item ID</label>
@@ -187,8 +314,8 @@ export function F4LootBoxPage() {
         </div>
       </StepCard>
 
-      {/* Step 2: Register */}
-      <StepCard step={2} title="Register Box" status={stepStatus("register")} accentColor="magenta">
+      {/* Step 3: Register */}
+      <StepCard step={3} title="Register Box" status={stepStatus("register")} accentColor="magenta">
         {setup && (
           <div className="space-y-3">
             <div className="text-xs space-y-1 glass-panel p-3">
@@ -208,8 +335,8 @@ export function F4LootBoxPage() {
         )}
       </StepCard>
 
-      {/* Step 3: Generate Proof */}
-      <StepCard step={3} title="Generate Open Proof" status={stepStatus("prove")} accentColor="magenta">
+      {/* Step 4: Generate Proof */}
+      <StepCard step={4} title="Generate Open Proof" status={stepStatus("prove")} accentColor="magenta">
         <div className="space-y-3">
           <p className="text-sm text-gray-500 font-body">
             The ZK circuit verifies the VRF chain: nullifier &rarr; vrfOutput &rarr; rarity
@@ -222,8 +349,8 @@ export function F4LootBoxPage() {
         </div>
       </StepCard>
 
-      {/* Step 4: Open Box */}
-      <StepCard step={4} title="Open Box" status={stepStatus("open")} accentColor="magenta">
+      {/* Step 5: Open Box */}
+      <StepCard step={5} title="Open Box" status={stepStatus("open")} accentColor="magenta">
         <div className="space-y-3">
           <button onClick={handleOpen} disabled={txPending} className="neon-btn neon-btn-magenta">
             {txPending ? "Opening..." : "Open Box On-Chain"}
@@ -250,6 +377,8 @@ export function F4LootBoxPage() {
               Item ID: <span className="font-mono text-gray-400">{setup.itemId.toString()}</span>
               {" | "}
               Rarity Level: <span className="font-mono text-gray-400">{setup.itemRarity.toString()}</span>
+              {" | "}
+              Box ID: <span className="font-mono text-gray-400">#{setup.boxId.toString()}</span>
             </p>
           </div>
         </div>

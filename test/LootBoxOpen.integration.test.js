@@ -134,7 +134,9 @@ describe("F4: Loot Box Open - Integration", function () {
   this.timeout(300000);
 
   let lootBoxOpen;
+  let mockToken;
   let hasBuild;
+  const BOX_PRICE = ethers.parseEther("10");
 
   before(async function () {
     await initBabyJub();
@@ -155,6 +157,13 @@ describe("F4: Loot Box Open - Integration", function () {
   beforeEach(async function () {
     if (!hasBuild) this.skip();
 
+    const [deployer] = await ethers.getSigners();
+
+    // Deploy MockERC20
+    const MockERC20 = await ethers.getContractFactory("MockERC20");
+    mockToken = await MockERC20.deploy();
+    await mockToken.mint(deployer.address, ethers.parseEther("100000"));
+
     let verifierAddress;
     try {
       const Verifier = await ethers.getContractFactory("contracts/verifiers/LootBoxOpenVerifier.sol:Groth16Verifier");
@@ -167,12 +176,17 @@ describe("F4: Loot Box Open - Integration", function () {
     }
 
     const LootBoxOpen = await ethers.getContractFactory("LootBoxOpen");
-    lootBoxOpen = await LootBoxOpen.deploy(verifierAddress);
+    lootBoxOpen = await LootBoxOpen.deploy(verifierAddress, await mockToken.getAddress(), BOX_PRICE);
+
+    // Pre-approve a large amount for convenience
+    await mockToken.approve(await lootBoxOpen.getAddress(), ethers.parseEther("100000"));
   });
 
   describe("Full pipeline: proof generation → on-chain verification", function () {
     it("should register and open box with real ZK proof", async function () {
-      const tx = await setupBoxOpen();
+      const mintTx = await lootBoxOpen.mintBox(1);
+      await mintTx.wait();
+      const tx = await setupBoxOpen({ boxId: 1n });
 
       await lootBoxOpen.registerBox(
         tx.boxCommitment, tx.boxId,
@@ -194,7 +208,9 @@ describe("F4: Loot Box Open - Integration", function () {
     });
 
     it("should open box with different box type", async function () {
-      const tx = await setupBoxOpen({ boxType: BigInt(3) });
+      const mintTx = await lootBoxOpen.mintBox(3);
+      await mintTx.wait();
+      const tx = await setupBoxOpen({ boxId: 1n, boxType: BigInt(3) });
 
       await lootBoxOpen.registerBox(
         tx.boxCommitment, tx.boxId,
@@ -213,9 +229,12 @@ describe("F4: Loot Box Open - Integration", function () {
     });
 
     it("should open multiple boxes from same owner", async function () {
+      await (await lootBoxOpen.mintBox(0)).wait();
+      await (await lootBoxOpen.mintBox(0)).wait();
+
       const ownerSk = await randomSecretKey();
-      const tx1 = await setupBoxOpen({ ownerSk });
-      const tx2 = await setupBoxOpen({ ownerSk });
+      const tx1 = await setupBoxOpen({ ownerSk, boxId: 1n });
+      const tx2 = await setupBoxOpen({ ownerSk, boxId: 2n });
 
       await lootBoxOpen.registerBox(
         tx1.boxCommitment, tx1.boxId,
@@ -249,7 +268,8 @@ describe("F4: Loot Box Open - Integration", function () {
 
   describe("Security: rejection cases", function () {
     it("should reject double-open (same nullifier)", async function () {
-      const tx = await setupBoxOpen();
+      await (await lootBoxOpen.mintBox(0)).wait();
+      const tx = await setupBoxOpen({ boxId: 1n });
 
       await lootBoxOpen.registerBox(
         tx.boxCommitment, tx.boxId,
@@ -275,7 +295,8 @@ describe("F4: Loot Box Open - Integration", function () {
     });
 
     it("should reject opening already-spent box", async function () {
-      const tx = await setupBoxOpen();
+      await (await lootBoxOpen.mintBox(0)).wait();
+      const tx = await setupBoxOpen({ boxId: 1n });
 
       await lootBoxOpen.registerBox(
         tx.boxCommitment, tx.boxId,
@@ -302,7 +323,8 @@ describe("F4: Loot Box Open - Integration", function () {
     });
 
     it("should reject duplicate box registration", async function () {
-      const tx = await setupBoxOpen();
+      await (await lootBoxOpen.mintBox(0)).wait();
+      const tx = await setupBoxOpen({ boxId: 1n });
 
       await lootBoxOpen.registerBox(
         tx.boxCommitment, tx.boxId,
@@ -316,7 +338,9 @@ describe("F4: Loot Box Open - Integration", function () {
     });
 
     it("should reject duplicate note hash registration", async function () {
-      const tx = await setupBoxOpen();
+      await (await lootBoxOpen.mintBox(0)).wait();
+      await (await lootBoxOpen.mintBox(0)).wait();
+      const tx = await setupBoxOpen({ boxId: 1n });
 
       await lootBoxOpen.registerBox(
         tx.boxCommitment, tx.boxId,
@@ -324,14 +348,15 @@ describe("F4: Loot Box Open - Integration", function () {
       );
 
       await expect(
-        lootBoxOpen.registerBox(tx.boxCommitment, 999, ethers.toUtf8Bytes("enc"))
+        lootBoxOpen.registerBox(tx.boxCommitment, 2, ethers.toUtf8Bytes("enc"))
       ).to.be.revertedWith("Note already exists");
     });
   });
 
   describe("Events", function () {
     it("should emit BoxRegistered event", async function () {
-      const tx = await setupBoxOpen();
+      await (await lootBoxOpen.mintBox(0)).wait();
+      const tx = await setupBoxOpen({ boxId: 1n });
 
       await expect(
         lootBoxOpen.registerBox(
@@ -342,7 +367,8 @@ describe("F4: Loot Box Open - Integration", function () {
     });
 
     it("should emit BoxOpened event on open", async function () {
-      const tx = await setupBoxOpen();
+      await (await lootBoxOpen.mintBox(0)).wait();
+      const tx = await setupBoxOpen({ boxId: 1n });
 
       await lootBoxOpen.registerBox(
         tx.boxCommitment, tx.boxId,

@@ -34,6 +34,7 @@ const abis = [
   { artifact: "artifacts/contracts/LootBoxOpen.sol/LootBoxOpen.json", output: "LootBoxOpen.json" },
   { artifact: "artifacts/contracts/GamingItemTrade.sol/GamingItemTrade.json", output: "GamingItemTrade.json" },
   { artifact: "artifacts/contracts/CardDraw.sol/CardDraw.json", output: "CardDraw.json" },
+  { artifact: "artifacts/contracts/test/MockERC20.sol/MockERC20.json", output: "MockERC20.json" },
 ];
 
 function ensureDir(dir) {

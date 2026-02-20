@@ -36,6 +36,7 @@ export const CONTRACT_NAMES = {
   LOOT_BOX_OPEN: "LootBoxOpen",
   GAMING_ITEM_TRADE: "GamingItemTrade",
   CARD_DRAW: "CardDraw",
+  MOCK_ERC20: "MockERC20",
 } as const;
 
 export type ContractName = (typeof CONTRACT_NAMES)[keyof typeof CONTRACT_NAMES];
