@@ -38,10 +38,15 @@ function formatProofForSolidity(proof) {
   };
 }
 
+function toHex32(bn) {
+  return "0x" + BigInt(bn).toString(16).padStart(64, "0");
+}
+
 let _itemIdCounter = 0;
 
 /**
- * Generate everything needed for a valid item trade
+ * Generate all cryptographic material for a trade.
+ * Returns both circuit inputs and formatted proof.
  */
 async function setupTrade(options = {}) {
   const sellerSk = options.sellerSk || await randomSecretKey();
@@ -109,26 +114,65 @@ async function setupTrade(options = {}) {
     circuitInputs,
     proof: formattedProof,
     publicSignals,
-    oldItemHash: "0x" + oldItemHash.toString(16).padStart(64, "0"),
-    newItemHash: "0x" + newItemHash.toString(16).padStart(64, "0"),
-    paymentNoteHash: "0x" + paymentNoteHash.toString(16).padStart(64, "0"),
+    oldItemHash: toHex32(oldItemHash),
+    newItemHash: toHex32(newItemHash),
+    paymentNoteHash: toHex32(paymentNoteHash),
     gameId,
     itemId,
-    nullifier: "0x" + nullifier.toString(16).padStart(64, "0"),
+    nullifier: toHex32(nullifier),
     sellerSk,
     buyerSk,
-    // Keep these for chained trades
+    sellerPk,
+    buyerPk,
+    // Keep for chained trades
     itemType,
     itemAttributes,
     price,
     paymentToken,
+    newSalt,
   };
+}
+
+/**
+ * Full P2P trade helper: register → list → purchase → execute
+ */
+async function doFullTrade(contract, token, tx, sellerSigner, buyerSigner, priceWei) {
+  const contractAddr = await contract.getAddress();
+
+  // 1. Register item
+  await contract.connect(sellerSigner).registerItem(
+    tx.oldItemHash, tx.gameId, tx.itemId, ethers.toUtf8Bytes("enc")
+  );
+
+  // 2. List item
+  await contract.connect(sellerSigner).listItem(
+    tx.oldItemHash, tx.gameId, tx.itemId, priceWei
+  );
+  const listingId = (await contract.nextListingId()) - 1n;
+
+  // 3. Buyer approves + purchases
+  await token.connect(buyerSigner).approve(contractAddr, priceWei);
+  const buyerPkX = BigInt(tx.circuitInputs.buyerPkX);
+  const buyerPkY = BigInt(tx.circuitInputs.buyerPkY);
+  await contract.connect(buyerSigner).purchaseItem(listingId, buyerPkX, buyerPkY);
+
+  // 4. Seller executes trade
+  await contract.connect(sellerSigner).executeTradeForBuyer(
+    listingId,
+    tx.proof.a, tx.proof.b, tx.proof.c,
+    tx.newItemHash, tx.paymentNoteHash, tx.nullifier,
+    ethers.toUtf8Bytes("new-enc")
+  );
+
+  return listingId;
 }
 
 describe("F5: Gaming Item Trade - Integration", function () {
   this.timeout(300000);
 
   let gamingItemTrade;
+  let mockToken;
+  let owner, sellerAcc, buyerAcc, thirdPartyAcc;
   let hasBuild;
 
   before(async function () {
@@ -150,60 +194,82 @@ describe("F5: Gaming Item Trade - Integration", function () {
   beforeEach(async function () {
     if (!hasBuild) this.skip();
 
+    [owner, sellerAcc, buyerAcc, thirdPartyAcc] = await ethers.getSigners();
+
+    // Deploy MockERC20 and fund accounts
+    const MockERC20 = await ethers.getContractFactory("MockERC20");
+    mockToken = await MockERC20.deploy();
+    await mockToken.mint(sellerAcc.address, ethers.parseEther("100000"));
+    await mockToken.mint(buyerAcc.address, ethers.parseEther("100000"));
+    await mockToken.mint(thirdPartyAcc.address, ethers.parseEther("100000"));
+
     let verifierAddress;
     try {
-      // The snarkjs-generated verifier contract name is "Groth16Verifier"
-      // but we may have multiple. Try the gaming item trade specific one.
-      const Verifier = await ethers.getContractFactory("contracts/verifiers/GamingItemTradeVerifier.sol:Groth16Verifier");
+      const Verifier = await ethers.getContractFactory(
+        "contracts/verifiers/GamingItemTradeVerifier.sol:Groth16Verifier"
+      );
       const verifier = await Verifier.deploy();
       verifierAddress = await verifier.getAddress();
     } catch (e) {
-      // Fallback to mock if verifier not compiled
       const MockVerifier = await ethers.getContractFactory("MockGamingItemTradeVerifier");
       const mockVerifier = await MockVerifier.deploy();
       verifierAddress = await mockVerifier.getAddress();
     }
 
     const GamingItemTrade = await ethers.getContractFactory("GamingItemTrade");
-    gamingItemTrade = await GamingItemTrade.deploy(verifierAddress);
+    gamingItemTrade = await GamingItemTrade.deploy(
+      verifierAddress,
+      await mockToken.getAddress()
+    );
   });
 
   describe("Full pipeline: proof generation → on-chain verification", function () {
-    it("should register and trade item with real ZK proof (paid)", async function () {
+    it("should complete full P2P trade with real ZK proof (paid)", async function () {
+      const priceWei = ethers.parseEther("100");
       const tx = await setupTrade({ price: 1000 });
 
-      await gamingItemTrade.registerItem(
-        tx.oldItemHash, tx.gameId, tx.itemId,
-        ethers.toUtf8Bytes("encrypted")
-      );
+      const sellerBefore = await mockToken.balanceOf(sellerAcc.address);
+      const buyerBefore = await mockToken.balanceOf(buyerAcc.address);
 
-      expect(await gamingItemTrade.getNoteState(tx.oldItemHash)).to.equal(1);
+      await doFullTrade(gamingItemTrade, mockToken, tx, sellerAcc, buyerAcc, priceWei);
 
-      await gamingItemTrade.tradeItem(
-        tx.proof.a, tx.proof.b, tx.proof.c,
-        tx.oldItemHash, tx.newItemHash, tx.paymentNoteHash,
-        tx.gameId, tx.nullifier,
-        ethers.toUtf8Bytes("new-encrypted")
-      );
-
-      expect(await gamingItemTrade.getNoteState(tx.oldItemHash)).to.equal(2);
-      expect(await gamingItemTrade.getNoteState(tx.newItemHash)).to.equal(1);
+      expect(await gamingItemTrade.getNoteState(tx.oldItemHash)).to.equal(2); // Spent
+      expect(await gamingItemTrade.getNoteState(tx.newItemHash)).to.equal(1); // Valid
       expect(await gamingItemTrade.isNullifierUsed(tx.nullifier)).to.be.true;
+
+      // Verify payment flows
+      const sellerAfter = await mockToken.balanceOf(sellerAcc.address);
+      const buyerAfter = await mockToken.balanceOf(buyerAcc.address);
+      expect(sellerAfter - sellerBefore).to.equal(priceWei);
+      expect(buyerBefore - buyerAfter).to.equal(priceWei);
     });
 
-    it("should register and trade item as gift (price=0)", async function () {
+    it("should complete full P2P trade as gift (price=0)", async function () {
+      const priceWei = ethers.parseEther("1"); // minimal price (gift uses price=0 in ZK, but needs >0 on-chain)
       const tx = await setupTrade({ price: 0 });
 
-      await gamingItemTrade.registerItem(
-        tx.oldItemHash, tx.gameId, tx.itemId,
-        ethers.toUtf8Bytes("encrypted")
-      );
+      // Gift: ZK circuit uses price=0, but on-chain listing still has a token price for escrow
+      // Use a minimal price for on-chain, keeping paymentNoteHash=0 in ZK
+      const contractAddr = await gamingItemTrade.getAddress();
 
-      await gamingItemTrade.tradeItem(
+      await gamingItemTrade.connect(sellerAcc).registerItem(
+        tx.oldItemHash, tx.gameId, tx.itemId, ethers.toUtf8Bytes("enc")
+      );
+      await gamingItemTrade.connect(sellerAcc).listItem(
+        tx.oldItemHash, tx.gameId, tx.itemId, priceWei
+      );
+      const listingId = (await gamingItemTrade.nextListingId()) - 1n;
+
+      await mockToken.connect(buyerAcc).approve(contractAddr, priceWei);
+      const buyerPkX = BigInt(tx.circuitInputs.buyerPkX);
+      const buyerPkY = BigInt(tx.circuitInputs.buyerPkY);
+      await gamingItemTrade.connect(buyerAcc).purchaseItem(listingId, buyerPkX, buyerPkY);
+
+      await gamingItemTrade.connect(sellerAcc).executeTradeForBuyer(
+        listingId,
         tx.proof.a, tx.proof.b, tx.proof.c,
-        tx.oldItemHash, tx.newItemHash, tx.paymentNoteHash,
-        tx.gameId, tx.nullifier,
-        ethers.toUtf8Bytes("new-encrypted")
+        tx.newItemHash, tx.paymentNoteHash, tx.nullifier,
+        ethers.toUtf8Bytes("new-enc")
       );
 
       expect(await gamingItemTrade.getNoteState(tx.oldItemHash)).to.equal(2);
@@ -211,40 +277,34 @@ describe("F5: Gaming Item Trade - Integration", function () {
     });
 
     it("should allow chained trades (A → B → C)", async function () {
-      // First trade: A → B
+      const priceWei = ethers.parseEther("100");
+
+      // First trade: A (sellerAcc) → B (buyerAcc)
       const tx1 = await setupTrade();
 
-      await gamingItemTrade.registerItem(
-        tx1.oldItemHash, tx1.gameId, tx1.itemId,
-        ethers.toUtf8Bytes("enc")
-      );
+      await doFullTrade(gamingItemTrade, mockToken, tx1, sellerAcc, buyerAcc, priceWei);
 
-      await gamingItemTrade.tradeItem(
-        tx1.proof.a, tx1.proof.b, tx1.proof.c,
-        tx1.oldItemHash, tx1.newItemHash, tx1.paymentNoteHash,
-        tx1.gameId, tx1.nullifier,
-        ethers.toUtf8Bytes("enc-b")
-      );
+      expect(await gamingItemTrade.getNoteState(tx1.oldItemHash)).to.equal(2); // Spent
+      expect(await gamingItemTrade.getNoteState(tx1.newItemHash)).to.equal(1); // Valid
 
-      // Second trade: B → C
+      // Second trade: B (buyerAcc) → C (thirdPartyAcc)
+      // B owns tx1.newItemHash; generate proof as B
       const ownerCSk = await randomSecretKey();
       const ownerCPk = await getPublicKey(ownerCSk);
-      const ownerBPk = await getPublicKey(tx1.buyerSk);
+      const ownerBPk = tx1.buyerPk;
+      const ownerBSk = tx1.buyerSk;
+
       const newSalt2 = BigInt("0x" + crypto.randomBytes(31).toString("hex"));
       const paymentSalt2 = BigInt("0x" + crypto.randomBytes(31).toString("hex"));
-
-      const bSalt = BigInt(tx1.circuitInputs.newSalt);
-      const itemId = tx1.itemId;
-      const itemType = tx1.itemType;
-      const itemAttributes = tx1.itemAttributes;
-      const gameId = tx1.gameId;
+      const bSalt = tx1.newSalt;
+      const { itemId, itemType, itemAttributes, gameId } = tx1;
       const price2 = BigInt(500);
       const paymentToken2 = BigInt(1);
 
       const newItemHash2 = await poseidonHash([
         ownerCPk.x, ownerCPk.y, itemId, itemType, itemAttributes, gameId, newSalt2,
       ]);
-      const nullifier2 = await poseidonHash([itemId, bSalt, tx1.buyerSk]);
+      const nullifier2 = await poseidonHash([itemId, bSalt, ownerBSk]);
       const paymentNoteHash2 = await poseidonHash([
         ownerBPk.x, ownerBPk.y, price2, paymentToken2, paymentSalt2,
       ]);
@@ -257,7 +317,7 @@ describe("F5: Gaming Item Trade - Integration", function () {
         nullifier: nullifier2.toString(),
         sellerPkX: ownerBPk.x.toString(),
         sellerPkY: ownerBPk.y.toString(),
-        sellerSk: tx1.buyerSk.toString(),
+        sellerSk: ownerBSk.toString(),
         oldSalt: bSalt.toString(),
         buyerPkX: ownerCPk.x.toString(),
         buyerPkY: ownerCPk.y.toString(),
@@ -275,72 +335,80 @@ describe("F5: Gaming Item Trade - Integration", function () {
       );
       const fp2 = formatProofForSolidity(proof2);
 
-      const newItemHash2Hex = "0x" + newItemHash2.toString(16).padStart(64, "0");
-      const nullifier2Hex = "0x" + nullifier2.toString(16).padStart(64, "0");
-      const paymentNoteHash2Hex = "0x" + paymentNoteHash2.toString(16).padStart(64, "0");
+      const newItemHash2Hex = toHex32(newItemHash2);
+      const nullifier2Hex = toHex32(nullifier2);
+      const paymentNoteHash2Hex = toHex32(paymentNoteHash2);
 
-      await gamingItemTrade.tradeItem(
+      const contractAddr = await gamingItemTrade.getAddress();
+
+      // B lists the note they received from first trade
+      await gamingItemTrade.connect(buyerAcc).listItem(
+        tx1.newItemHash, gameId, itemId, priceWei
+      );
+      const listingId2 = (await gamingItemTrade.nextListingId()) - 1n;
+
+      // C purchases
+      await mockToken.connect(thirdPartyAcc).approve(contractAddr, priceWei);
+      await gamingItemTrade.connect(thirdPartyAcc).purchaseItem(
+        listingId2, ownerCPk.x, ownerCPk.y
+      );
+
+      // B executes trade for C
+      await gamingItemTrade.connect(buyerAcc).executeTradeForBuyer(
+        listingId2,
         fp2.a, fp2.b, fp2.c,
-        tx1.newItemHash, newItemHash2Hex, paymentNoteHash2Hex,
-        gameId, nullifier2Hex,
+        newItemHash2Hex, paymentNoteHash2Hex, nullifier2Hex,
         ethers.toUtf8Bytes("enc-c")
       );
 
-      expect(await gamingItemTrade.getNoteState(tx1.newItemHash)).to.equal(2);
-      expect(await gamingItemTrade.getNoteState(newItemHash2Hex)).to.equal(1);
+      expect(await gamingItemTrade.getNoteState(tx1.newItemHash)).to.equal(2); // Spent
+      expect(await gamingItemTrade.getNoteState(newItemHash2Hex)).to.equal(1); // Valid
     });
   });
 
   describe("Security: rejection cases", function () {
     it("should reject double-spend (same nullifier)", async function () {
+      const priceWei = ethers.parseEther("100");
       const tx = await setupTrade();
+      const contractAddr = await gamingItemTrade.getAddress();
 
-      await gamingItemTrade.registerItem(
-        tx.oldItemHash, tx.gameId, tx.itemId,
-        ethers.toUtf8Bytes("enc")
+      await doFullTrade(gamingItemTrade, mockToken, tx, sellerAcc, buyerAcc, priceWei);
+
+      // Set up a second listing (new item)
+      const tx2 = await setupTrade();
+      await gamingItemTrade.connect(sellerAcc).registerItem(
+        tx2.oldItemHash, tx2.gameId, tx2.itemId, ethers.toUtf8Bytes("enc")
+      );
+      await gamingItemTrade.connect(sellerAcc).listItem(
+        tx2.oldItemHash, tx2.gameId, tx2.itemId, priceWei
+      );
+      const listingId2 = (await gamingItemTrade.nextListingId()) - 1n;
+      await mockToken.connect(buyerAcc).approve(contractAddr, priceWei);
+      await gamingItemTrade.connect(buyerAcc).purchaseItem(
+        listingId2, BigInt(tx2.circuitInputs.buyerPkX), BigInt(tx2.circuitInputs.buyerPkY)
       );
 
-      await gamingItemTrade.tradeItem(
-        tx.proof.a, tx.proof.b, tx.proof.c,
-        tx.oldItemHash, tx.newItemHash, tx.paymentNoteHash,
-        tx.gameId, tx.nullifier,
-        ethers.toUtf8Bytes("enc")
-      );
-
-      const fakeNewHash = ethers.keccak256(ethers.toUtf8Bytes("fake-new"));
+      // Try to reuse nullifier from first trade
       await expect(
-        gamingItemTrade.tradeItem(
-          tx.proof.a, tx.proof.b, tx.proof.c,
-          tx.newItemHash, fakeNewHash, tx.paymentNoteHash,
-          tx.gameId, tx.nullifier,
+        gamingItemTrade.connect(sellerAcc).executeTradeForBuyer(
+          listingId2,
+          tx2.proof.a, tx2.proof.b, tx2.proof.c,
+          tx2.newItemHash, tx2.paymentNoteHash, tx.nullifier, // reused nullifier
           ethers.toUtf8Bytes("enc")
         )
       ).to.be.revertedWith("Nullifier already used");
     });
 
     it("should reject trade of already-spent note", async function () {
+      const priceWei = ethers.parseEther("100");
       const tx = await setupTrade();
 
-      await gamingItemTrade.registerItem(
-        tx.oldItemHash, tx.gameId, tx.itemId,
-        ethers.toUtf8Bytes("enc")
-      );
+      await doFullTrade(gamingItemTrade, mockToken, tx, sellerAcc, buyerAcc, priceWei);
 
-      await gamingItemTrade.tradeItem(
-        tx.proof.a, tx.proof.b, tx.proof.c,
-        tx.oldItemHash, tx.newItemHash, tx.paymentNoteHash,
-        tx.gameId, tx.nullifier,
-        ethers.toUtf8Bytes("enc")
-      );
-
-      const fakeNullifier = ethers.keccak256(ethers.toUtf8Bytes("fake-null"));
-      const fakeNewHash = ethers.keccak256(ethers.toUtf8Bytes("fake-new2"));
+      // The old note is now spent — listing a new listing for it would fail on noteExists
       await expect(
-        gamingItemTrade.tradeItem(
-          tx.proof.a, tx.proof.b, tx.proof.c,
-          tx.oldItemHash, fakeNewHash, tx.paymentNoteHash,
-          tx.gameId, fakeNullifier,
-          ethers.toUtf8Bytes("enc")
+        gamingItemTrade.connect(sellerAcc).listItem(
+          tx.oldItemHash, tx.gameId, tx.itemId, priceWei
         )
       ).to.be.revertedWith("Note does not exist or already spent");
     });
@@ -348,16 +416,14 @@ describe("F5: Gaming Item Trade - Integration", function () {
     it("should reject duplicate item registration", async function () {
       const tx = await setupTrade();
 
-      await gamingItemTrade.registerItem(
-        tx.oldItemHash, tx.gameId, tx.itemId,
-        ethers.toUtf8Bytes("enc")
+      await gamingItemTrade.connect(sellerAcc).registerItem(
+        tx.oldItemHash, tx.gameId, tx.itemId, ethers.toUtf8Bytes("enc")
       );
 
       const fakeHash = ethers.keccak256(ethers.toUtf8Bytes("different-hash"));
       await expect(
-        gamingItemTrade.registerItem(
-          fakeHash, tx.gameId, tx.itemId,
-          ethers.toUtf8Bytes("enc")
+        gamingItemTrade.connect(sellerAcc).registerItem(
+          fakeHash, tx.gameId, tx.itemId, ethers.toUtf8Bytes("enc")
         )
       ).to.be.revertedWith("Item already registered");
     });
@@ -365,15 +431,13 @@ describe("F5: Gaming Item Trade - Integration", function () {
     it("should reject duplicate note hash registration", async function () {
       const tx = await setupTrade();
 
-      await gamingItemTrade.registerItem(
-        tx.oldItemHash, tx.gameId, tx.itemId,
-        ethers.toUtf8Bytes("enc")
+      await gamingItemTrade.connect(sellerAcc).registerItem(
+        tx.oldItemHash, tx.gameId, tx.itemId, ethers.toUtf8Bytes("enc")
       );
 
       await expect(
-        gamingItemTrade.registerItem(
-          tx.oldItemHash, 999, 999,
-          ethers.toUtf8Bytes("enc")
+        gamingItemTrade.connect(sellerAcc).registerItem(
+          tx.oldItemHash, 999n, 999n, ethers.toUtf8Bytes("enc")
         )
       ).to.be.revertedWith("Note already exists");
     });
@@ -384,29 +448,50 @@ describe("F5: Gaming Item Trade - Integration", function () {
       const tx = await setupTrade();
 
       await expect(
-        gamingItemTrade.registerItem(
-          tx.oldItemHash, tx.gameId, tx.itemId,
-          ethers.toUtf8Bytes("enc")
+        gamingItemTrade.connect(sellerAcc).registerItem(
+          tx.oldItemHash, tx.gameId, tx.itemId, ethers.toUtf8Bytes("enc")
         )
       ).to.emit(gamingItemTrade, "ItemRegistered");
     });
 
-    it("should emit ItemTraded event on trade", async function () {
+    it("should emit ItemListed event", async function () {
       const tx = await setupTrade();
-
-      await gamingItemTrade.registerItem(
-        tx.oldItemHash, tx.gameId, tx.itemId,
-        ethers.toUtf8Bytes("enc")
+      await gamingItemTrade.connect(sellerAcc).registerItem(
+        tx.oldItemHash, tx.gameId, tx.itemId, ethers.toUtf8Bytes("enc")
       );
 
       await expect(
-        gamingItemTrade.tradeItem(
+        gamingItemTrade.connect(sellerAcc).listItem(
+          tx.oldItemHash, tx.gameId, tx.itemId, ethers.parseEther("100")
+        )
+      ).to.emit(gamingItemTrade, "ItemListed");
+    });
+
+    it("should emit ItemTradeCompleted event on full trade", async function () {
+      const priceWei = ethers.parseEther("100");
+      const tx = await setupTrade();
+      const contractAddr = await gamingItemTrade.getAddress();
+
+      await gamingItemTrade.connect(sellerAcc).registerItem(
+        tx.oldItemHash, tx.gameId, tx.itemId, ethers.toUtf8Bytes("enc")
+      );
+      await gamingItemTrade.connect(sellerAcc).listItem(
+        tx.oldItemHash, tx.gameId, tx.itemId, priceWei
+      );
+      const listingId = (await gamingItemTrade.nextListingId()) - 1n;
+      await mockToken.connect(buyerAcc).approve(contractAddr, priceWei);
+      await gamingItemTrade.connect(buyerAcc).purchaseItem(
+        listingId, BigInt(tx.circuitInputs.buyerPkX), BigInt(tx.circuitInputs.buyerPkY)
+      );
+
+      await expect(
+        gamingItemTrade.connect(sellerAcc).executeTradeForBuyer(
+          listingId,
           tx.proof.a, tx.proof.b, tx.proof.c,
-          tx.oldItemHash, tx.newItemHash, tx.paymentNoteHash,
-          tx.gameId, tx.nullifier,
+          tx.newItemHash, tx.paymentNoteHash, tx.nullifier,
           ethers.toUtf8Bytes("enc")
         )
-      ).to.emit(gamingItemTrade, "ItemTraded");
+      ).to.emit(gamingItemTrade, "ItemTradeCompleted");
     });
   });
 });

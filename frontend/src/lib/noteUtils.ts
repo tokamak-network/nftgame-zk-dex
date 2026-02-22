@@ -212,6 +212,90 @@ export async function generateF5Proof(circuitInputs: Record<string, unknown>) {
   return generateProof(CIRCUIT_NAMES.GAMING_ITEM_TRADE, circuitInputs);
 }
 
+// ─── F5 P2P Marketplace ───
+
+export type F5SellerSetupResult = {
+  seller: Keypair;
+  oldItemHash: bigint;
+  oldSalt: bigint;
+  gameId: bigint;
+  itemId: bigint;
+  itemType: bigint;
+  itemAttributes: bigint;
+  price: bigint;
+  paymentToken: bigint;
+};
+
+/**
+ * Seller setup step: generate keypair and compute the item note commitment.
+ * Call this when registering the item on-chain.
+ */
+export async function setupF5SellerItem(
+  itemId: bigint,
+  itemType: bigint,
+  itemAttributes: bigint,
+  gameId: bigint,
+  price: bigint,
+  paymentToken: bigint,
+): Promise<F5SellerSetupResult> {
+  const seller = await generateKeypair();
+  const oldSalt = randomSalt();
+  const oldItemHash = await poseidonHash([
+    seller.pk.x, seller.pk.y, itemId, itemType, itemAttributes, gameId, oldSalt,
+  ]);
+  return { seller, oldItemHash, oldSalt, gameId, itemId, itemType, itemAttributes, price, paymentToken };
+}
+
+/**
+ * Seller proof step: after buyer has called purchaseItem on-chain,
+ * seller uses buyer's ZK pubkey (from listing) to generate the circuit inputs.
+ * Returns an F5SetupResult ready for proof generation.
+ */
+export async function setupF5TradeWithBuyer(
+  sellerSetup: F5SellerSetupResult,
+  buyerPkX: bigint,
+  buyerPkY: bigint,
+): Promise<F5SetupResult> {
+  const newSalt = randomSalt();
+  const paymentSalt = randomSalt();
+  const { seller, oldItemHash, oldSalt, gameId, itemId, itemType, itemAttributes, price, paymentToken } = sellerSetup;
+
+  const newItemHash = await poseidonHash([
+    buyerPkX, buyerPkY, itemId, itemType, itemAttributes, gameId, newSalt,
+  ]);
+  const paymentNoteHash =
+    price === 0n
+      ? 0n
+      : await poseidonHash([seller.pk.x, seller.pk.y, price, paymentToken, paymentSalt]);
+  const nullifier = await poseidonHash([itemId, oldSalt, seller.sk]);
+
+  // Buyer keypair: only public key is known (secret key is held by buyer)
+  const buyer: Keypair = { sk: 0n, pk: { x: buyerPkX, y: buyerPkY } };
+
+  const circuitInputs = {
+    oldItemHash: oldItemHash.toString(),
+    newItemHash: newItemHash.toString(),
+    paymentNoteHash: paymentNoteHash.toString(),
+    gameId: gameId.toString(),
+    nullifier: nullifier.toString(),
+    sellerPkX: seller.pk.x.toString(),
+    sellerPkY: seller.pk.y.toString(),
+    sellerSk: seller.sk.toString(),
+    oldSalt: oldSalt.toString(),
+    buyerPkX: buyerPkX.toString(),
+    buyerPkY: buyerPkY.toString(),
+    newSalt: newSalt.toString(),
+    itemId: itemId.toString(),
+    itemType: itemType.toString(),
+    itemAttributes: itemAttributes.toString(),
+    price: price.toString(),
+    paymentToken: paymentToken.toString(),
+    paymentSalt: paymentSalt.toString(),
+  };
+
+  return { seller, buyer, oldItemHash, newItemHash, paymentNoteHash, nullifier, gameId, itemId, circuitInputs };
+}
+
 // ─── Shared helpers ───
 
 export function encryptedNoteBytes(): Uint8Array {

@@ -48,6 +48,7 @@ async function main() {
       verifier: "contracts/verifiers/GamingItemTradeVerifier.sol:Groth16Verifier",
       main: "GamingItemTrade",
       key: "gamingItemTrade",
+      args: (verifierAddr) => [verifierAddr, tonAddr],
     },
     {
       verifier: "contracts/verifiers/CardDrawVerifier.sol:Groth16Verifier",
