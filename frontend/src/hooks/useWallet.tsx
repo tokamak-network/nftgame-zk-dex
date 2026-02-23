@@ -1,5 +1,6 @@
 import { useState, useCallback, createContext, useContext, type ReactNode } from 'react';
 import { BrowserProvider, JsonRpcSigner } from 'ethers';
+import { setNoteStoreAddress } from '../lib/noteStore';
 
 interface WalletState {
   provider: BrowserProvider | null;
@@ -38,6 +39,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const address = await signer.getAddress();
       const network = await provider.getNetwork();
 
+      setNoteStoreAddress(address);
       setWallet({
         provider,
         signer,
@@ -51,6 +53,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const disconnect = useCallback(() => {
+    setNoteStoreAddress("default");
     setWallet({
       provider: null,
       signer: null,

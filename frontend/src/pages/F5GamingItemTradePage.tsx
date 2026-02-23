@@ -32,9 +32,15 @@ type OnChainListing = {
   buyerPkY: bigint;
 };
 
+type SellerTab = "create" | "mylistings";
 type SellerStep = 1 | 2 | 3 | 4 | 5 | 6;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
+const SETUPS_STORAGE_KEY = "f5_seller_setups_v1";
+
+// ─── Helpers (outside component) ─────────────────────────────────────────────
 
 function shortHash(h: string) {
   return h.slice(0, 10) + "..." + h.slice(-6);
@@ -44,7 +50,85 @@ function formatPrice(wei: bigint) {
   return (Number(wei) / 1e18).toFixed(4) + " TON";
 }
 
-const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
+// ethers v6 Result objects lose named properties when spread.
+// Explicitly map each field to a plain object.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseListing(l: any, id: number): OnChainListing & { id: number } {
+  return {
+    id,
+    seller: l.seller as string,
+    itemNoteHash: l.itemNoteHash as string,
+    gameId: l.gameId as bigint,
+    itemId: l.itemId as bigint,
+    price: l.price as bigint,
+    active: l.active as boolean,
+    buyer: l.buyer as string,
+    buyerPkX: l.buyerPkX as bigint,
+    buyerPkY: l.buyerPkY as bigint,
+  };
+}
+
+// ─── localStorage persistence for seller setups ───────────────────────────────
+
+function saveSetupToStorage(listingId: number, setup: F5SellerSetupResult): void {
+  try {
+    const stored = localStorage.getItem(SETUPS_STORAGE_KEY);
+    const all: Record<string, unknown> = stored ? JSON.parse(stored) : {};
+    all[String(listingId)] = {
+      seller: {
+        sk: setup.seller.sk.toString(),
+        pk: { x: setup.seller.pk.x.toString(), y: setup.seller.pk.y.toString() },
+      },
+      oldItemHash: setup.oldItemHash.toString(),
+      oldSalt: setup.oldSalt.toString(),
+      gameId: setup.gameId.toString(),
+      itemId: setup.itemId.toString(),
+      itemType: setup.itemType.toString(),
+      itemAttributes: setup.itemAttributes.toString(),
+      price: setup.price.toString(),
+      paymentToken: setup.paymentToken.toString(),
+    };
+    localStorage.setItem(SETUPS_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // localStorage unavailable
+  }
+}
+
+function loadSetupFromStorage(listingId: number): F5SellerSetupResult | null {
+  try {
+    const stored = localStorage.getItem(SETUPS_STORAGE_KEY);
+    if (!stored) return null;
+    const all = JSON.parse(stored);
+    const raw = all[String(listingId)];
+    if (!raw) return null;
+    return {
+      seller: {
+        sk: BigInt(raw.seller.sk),
+        pk: { x: BigInt(raw.seller.pk.x), y: BigInt(raw.seller.pk.y) },
+      },
+      oldItemHash: BigInt(raw.oldItemHash),
+      oldSalt: BigInt(raw.oldSalt),
+      gameId: BigInt(raw.gameId),
+      itemId: BigInt(raw.itemId),
+      itemType: BigInt(raw.itemType),
+      itemAttributes: BigInt(raw.itemAttributes),
+      price: BigInt(raw.price),
+      paymentToken: BigInt(raw.paymentToken),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function hasSavedSetups(): boolean {
+  try {
+    const stored = localStorage.getItem(SETUPS_STORAGE_KEY);
+    if (!stored) return false;
+    return Object.keys(JSON.parse(stored)).length > 0;
+  } catch {
+    return false;
+  }
+}
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -58,6 +142,10 @@ export function F5GamingItemTradePage() {
   const [role, setRole] = useState<"seller" | "buyer" | null>(null);
 
   // ── Seller state ──
+  // Default to "mylistings" tab if previous sessions exist
+  const [sellerTab, setSellerTab] = useState<SellerTab>(() =>
+    hasSavedSetups() ? "mylistings" : "create"
+  );
   const [sellerStep, setSellerStep] = useState<SellerStep>(1);
   const [itemIdInput, setItemIdInput] = useState("2001");
   const [itemTypeInput, setItemTypeInput] = useState("1");
@@ -70,6 +158,15 @@ export function F5GamingItemTradePage() {
   const [activeListing, setActiveListing] = useState<OnChainListing | null>(null);
   const [tradeSetup, setTradeSetup] = useState<F5SetupResult | null>(null);
   const [proofResult, setProofResult] = useState<ProofResult | null>(null);
+
+  // My Listings state
+  const [myListings, setMyListings] = useState<(OnChainListing & { id: number; hasSetup: boolean })[]>([]);
+  const [myListingsLoading, setMyListingsLoading] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+
+  // Cancel listing tx (keyed by listingId)
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   // Registration tx
   const [regTxHash, setRegTxHash] = useState<string | null>(null);
@@ -95,13 +192,11 @@ export function F5GamingItemTradePage() {
   const [buyerKeypair, setBuyerKeypair] = useState<Keypair | null>(null);
   const [buyerListingsLoading, setBuyerListingsLoading] = useState(false);
 
-  // Approve tx
   const [approveTxHash, setApproveTxHash] = useState<string | null>(null);
   const [approvePending, setApprovePending] = useState(false);
   const [approveConfirmed, setApproveConfirmed] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
 
-  // Purchase tx
   const [purchaseTxHash, setPurchaseTxHash] = useState<string | null>(null);
   const [purchasePending, setPurchasePending] = useState(false);
   const [purchaseConfirmed, setPurchaseConfirmed] = useState(false);
@@ -109,54 +204,75 @@ export function F5GamingItemTradePage() {
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── Fetch listings ────────────────────────────────────────────────────────
+  // ── Fetch functions ───────────────────────────────────────────────────────
 
   const fetchListings = useCallback(async () => {
     if (!contract) return;
     try {
-      const raw: OnChainListing[] = await contract.getListings();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const raw: any[] = await contract.getListings();
       const indexed = raw
-        .map((l, i) => ({ ...l, id: i + 1 }))
+        .map((l, i) => parseListing(l, i + 1))
         .filter((l) => l.active);
       setActiveListings(indexed);
-    } catch {
-      // silent
+    } catch (e) {
+      console.error("fetchListings error:", e);
     }
   }, [contract]);
 
   const fetchListing = useCallback(async (id: number) => {
     if (!contract) return;
     try {
-      const l: OnChainListing = await contract.getListing(id);
-      setActiveListing(l);
-    } catch {
-      // silent
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const l: any = await contract.getListing(id);
+      setActiveListing(parseListing(l, id));
+    } catch (e) {
+      console.error("fetchListing error:", e);
     }
   }, [contract]);
 
-  // ── Polling ───────────────────────────────────────────────────────────────
+  const fetchMyListings = useCallback(async () => {
+    if (!contract || !signer) return;
+    setMyListingsLoading(true);
+    try {
+      const myAddr = signer.address.toLowerCase();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const raw: any[] = await contract.getListings();
+      const mine = raw
+        .map((l, i) => parseListing(l, i + 1))
+        .filter((l) => l.seller.toLowerCase() === myAddr)
+        .map((l) => ({ ...l, hasSetup: loadSetupFromStorage(l.id) !== null }));
+      setMyListings(mine);
+    } catch (e) {
+      console.error("fetchMyListings error:", e);
+    } finally {
+      setMyListingsLoading(false);
+    }
+  }, [contract, signer]);
+
+  // ── Polling & effects ─────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!contract) return;
+    if (pollingRef.current) clearInterval(pollingRef.current);
 
     if (role === "buyer") {
       setBuyerListingsLoading(true);
       fetchListings().finally(() => setBuyerListingsLoading(false));
       pollingRef.current = setInterval(fetchListings, 5000);
-    }
-
-    if (role === "seller" && sellerStep === 4 && listingId !== null) {
-      pollingRef.current = setInterval(async () => {
-        await fetchListing(listingId);
-      }, 3000);
+    } else if (role === "seller" && sellerTab === "mylistings") {
+      fetchMyListings();
+      pollingRef.current = setInterval(fetchMyListings, 5000);
+    } else if (role === "seller" && sellerTab === "create" && sellerStep === 4 && listingId !== null) {
+      pollingRef.current = setInterval(() => fetchListing(listingId), 3000);
     }
 
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
     };
-  }, [contract, role, sellerStep, listingId, fetchListings, fetchListing]);
+  }, [contract, role, sellerTab, sellerStep, listingId, fetchListings, fetchListing, fetchMyListings]);
 
-  // Auto-advance when buyer is detected
+  // Auto-advance to step 5 when buyer is detected in step 4
   useEffect(() => {
     if (
       role === "seller" &&
@@ -221,15 +337,66 @@ export function F5GamingItemTradePage() {
       await tx.wait();
       setListConfirmed(true);
 
-      // Read back the listing ID
       const nextId: bigint = await contract.nextListingId();
       const newListingId = Number(nextId) - 1;
       setListingId(newListingId);
+
+      // Persist seller setup so it can be resumed after navigation
+      saveSetupToStorage(newListingId, sellerSetup);
+
       setSellerStep(4);
     } catch (err) {
       setListError(err instanceof Error ? err.message : "Listing failed");
     } finally {
       setListPending(false);
+    }
+  }
+
+  async function handleResumeListing(listing: OnChainListing & { id: number }) {
+    setResumeError(null);
+    const setup = loadSetupFromStorage(listing.id);
+    if (!setup) {
+      setResumeError(`Listing #${listing.id}: ZK setup not found in local storage. Clear your browser data may have removed it.`);
+      return;
+    }
+    if (!listing.active) {
+      setResumeError(`Listing #${listing.id} is no longer active.`);
+      return;
+    }
+
+    // Restore state for the create flow
+    setSellerSetup(setup);
+    setListingId(listing.id);
+    setActiveListing(listing);
+    setTradeSetup(null);
+    setProofResult(null);
+    setExecTxHash(null);
+    setExecConfirmed(false);
+    setExecError(null);
+
+    // Mark earlier steps as complete
+    setRegConfirmed(true);
+    setListConfirmed(true);
+    setItemIdInput(setup.itemId.toString());
+    setGameIdInput(setup.gameId.toString());
+    setPriceInput((Number(setup.price) / 1e18).toString());
+
+    setSellerStep(listing.buyer !== ZERO_ADDR ? 5 : 4);
+    setSellerTab("create");
+  }
+
+  async function handleCancelListing(listingId: number) {
+    if (!contract) return;
+    setCancelError(null);
+    setCancellingId(listingId);
+    try {
+      const tx = await contract.cancelListing(listingId);
+      await tx.wait();
+      await fetchMyListings();
+    } catch (err) {
+      setCancelError(err instanceof Error ? err.message : "Cancel failed");
+    } finally {
+      setCancellingId(null);
     }
   }
 
@@ -291,8 +458,6 @@ export function F5GamingItemTradePage() {
     setPurchaseError(null);
     setApproveConfirmed(false);
     setApproveError(null);
-
-    // Generate buyer ZK keypair locally
     const kp = await generateKeypair();
     setBuyerKeypair(kp);
   }
@@ -302,7 +467,6 @@ export function F5GamingItemTradePage() {
     const listing = activeListings.find((l) => l.id === selectedListingId);
     if (!listing) return;
 
-    // Approve
     setApproveError(null);
     setApprovePending(true);
     try {
@@ -321,7 +485,6 @@ export function F5GamingItemTradePage() {
       setApprovePending(false);
     }
 
-    // Purchase
     setPurchaseError(null);
     setPurchasePending(true);
     try {
@@ -348,13 +511,36 @@ export function F5GamingItemTradePage() {
         },
       });
 
-      // Refresh listings
       await fetchListings();
     } catch (err) {
       setPurchaseError(err instanceof Error ? err.message : "Purchase failed");
     } finally {
       setPurchasePending(false);
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  function ListingStatusBadge({ listing }: { listing: OnChainListing }) {
+    if (!listing.active) {
+      return <span className="text-[10px] font-display tracking-wider px-1.5 py-0.5 rounded border border-gray-700 text-gray-600">CLOSED</span>;
+    }
+    if (listing.buyer === ZERO_ADDR) {
+      return (
+        <span className="text-[10px] font-display tracking-wider px-1.5 py-0.5 rounded border border-neon-orange/40 neon-text-orange flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-neon-orange animate-pulse inline-block" />
+          WAITING
+        </span>
+      );
+    }
+    return (
+      <span className="text-[10px] font-display tracking-wider px-1.5 py-0.5 rounded border border-green-500/40 text-green-400 flex items-center gap-1">
+        <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+        BUYER READY
+      </span>
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -387,7 +573,6 @@ export function F5GamingItemTradePage() {
             P2P marketplace for privately trading in-game items via ZK proofs and ERC20 escrow.
           </p>
         </div>
-
         <div className="glass-panel border border-border-dim p-6 space-y-4">
           <p className="font-display text-sm tracking-wider text-gray-400">SELECT YOUR ROLE</p>
           <div className="grid grid-cols-2 gap-4">
@@ -425,13 +610,12 @@ export function F5GamingItemTradePage() {
 
     return (
       <div className="max-w-2xl mx-auto space-y-6 stagger-in">
-        <div className="mb-4">
+        {/* Header */}
+        <div className="mb-2">
           <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-3">
-              <span className="font-display text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 border border-neon-orange rounded neon-text-orange">
-                SELLER
-              </span>
-            </div>
+            <span className="font-display text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 border border-neon-orange rounded neon-text-orange">
+              SELLER
+            </span>
             <button
               onClick={() => setRole(null)}
               className="text-xs text-gray-600 hover:text-gray-400 font-display tracking-wider"
@@ -442,175 +626,359 @@ export function F5GamingItemTradePage() {
           <h1 className="font-display text-2xl font-bold tracking-wider neon-text-orange mb-1">
             F5: Gaming Item Trade
           </h1>
-          <p className="text-sm font-body text-gray-500">
-            List your item → wait for a buyer → generate ZK proof → complete trade.
-          </p>
         </div>
 
-        {/* Step 1: Configure Item */}
-        <StepCard step={1} title="Configure Item" status={stepStatus(1)} accentColor="orange">
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                ["Item ID", itemIdInput, setItemIdInput],
-                ["Item Type", itemTypeInput, setItemTypeInput],
-                ["Attributes", itemAttrInput, setItemAttrInput],
-                ["Game ID", gameIdInput, setGameIdInput],
-              ].map(([label, value, setter]) => (
-                <div key={label as string}>
+        {/* Tabs */}
+        <div className="flex gap-1 glass-panel border border-border-dim p-1 rounded">
+          <button
+            onClick={() => setSellerTab("create")}
+            className={`flex-1 py-2 px-4 text-xs font-display tracking-wider rounded transition-colors ${
+              sellerTab === "create"
+                ? "bg-neon-orange/20 neon-text-orange border border-neon-orange/40"
+                : "text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            + NEW LISTING
+          </button>
+          <button
+            onClick={() => { setSellerTab("mylistings"); setResumeError(null); }}
+            className={`flex-1 py-2 px-4 text-xs font-display tracking-wider rounded transition-colors ${
+              sellerTab === "mylistings"
+                ? "bg-neon-orange/20 neon-text-orange border border-neon-orange/40"
+                : "text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            MY LISTINGS {myListings.length > 0 && `(${myListings.length})`}
+          </button>
+        </div>
+
+        {/* ── MY LISTINGS tab ── */}
+        {sellerTab === "mylistings" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-body text-gray-500">
+                Your on-chain listings. Resume a trade where you left off.
+              </p>
+              <button
+                onClick={fetchMyListings}
+                disabled={myListingsLoading}
+                className="text-xs font-display tracking-wider text-gray-500 hover:neon-text-orange transition-colors"
+              >
+                {myListingsLoading ? "Loading..." : "↻ Refresh"}
+              </button>
+            </div>
+
+            {(resumeError || cancelError) && (
+              <div className="glass-panel border border-red-500/40 p-3">
+                <p className="text-xs text-red-400 font-body">{resumeError ?? cancelError}</p>
+              </div>
+            )}
+
+            {myListingsLoading && myListings.length === 0 ? (
+              <div className="glass-panel border border-border-dim p-6 text-center">
+                <p className="text-xs text-gray-600 font-body">Loading your listings...</p>
+              </div>
+            ) : myListings.length === 0 ? (
+              <div className="glass-panel border border-border-dim p-6 text-center space-y-2">
+                <p className="text-sm text-gray-500 font-body">No listings found for your wallet.</p>
+                <button
+                  onClick={() => setSellerTab("create")}
+                  className="neon-btn neon-btn-orange text-xs"
+                >
+                  + Create New Listing
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {myListings.map((listing) => (
+                  <div
+                    key={listing.id}
+                    className={`glass-panel p-4 border ${
+                      listing.active && listing.buyer !== ZERO_ADDR
+                        ? "border-green-500/30"
+                        : listing.active
+                        ? "border-neon-orange/30"
+                        : "border-border-dim opacity-60"
+                    }`}
+                  >
+                    {/* Listing header */}
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <p className="font-display text-sm tracking-wider text-gray-200">
+                          Listing #{listing.id}
+                        </p>
+                        <p className="text-xs font-body text-gray-500 mt-0.5">
+                          Item #{listing.itemId.toString()} · Game {listing.gameId.toString()}
+                        </p>
+                      </div>
+                      <div className="flex flex-col items-end gap-1">
+                        <ListingStatusBadge listing={listing} />
+                        <span className="font-mono text-xs neon-text-orange">
+                          {formatPrice(listing.price)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Note hash */}
+                    <p className="text-[10px] font-mono text-gray-600 mb-3">
+                      Note: {shortHash(listing.itemNoteHash)}
+                    </p>
+
+                    {/* Buyer info if found */}
+                    {listing.buyer !== ZERO_ADDR && (
+                      <div className="glass-panel p-2 mb-3 space-y-1">
+                        <p className="text-[10px] text-green-400 font-display tracking-wider">BUYER PAID — AWAITING ZK PROOF</p>
+                        <p className="text-[10px] font-mono text-gray-500">
+                          Buyer: {listing.buyer.slice(0, 10)}...{listing.buyer.slice(-6)}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    {listing.active && listing.buyer !== ZERO_ADDR && (
+                      <div className="space-y-2">
+                        {listing.hasSetup ? (
+                          <button
+                            onClick={() => handleResumeListing(listing)}
+                            className="neon-btn neon-btn-orange w-full text-xs"
+                          >
+                            Resume Trade → Generate ZK Proof
+                          </button>
+                        ) : (
+                          <div className="glass-panel border border-yellow-500/30 p-2 space-y-1">
+                            <p className="text-[10px] text-yellow-500/70 font-body">
+                              ⚠️ ZK private key not found in local storage (created in a different session).
+                              Cannot generate proof. Cancel to refund the buyer.
+                            </p>
+                          </div>
+                        )}
+                        {/* Cancel is always available for active listings */}
+                        <button
+                          onClick={() => handleCancelListing(listing.id)}
+                          disabled={cancellingId === listing.id}
+                          className="w-full py-1.5 px-3 text-[10px] font-display tracking-wider border border-red-500/40 text-red-400/70 hover:border-red-500/70 hover:text-red-400 transition-colors rounded"
+                        >
+                          {cancellingId === listing.id ? "Cancelling..." : "Cancel Listing (Refund Buyer)"}
+                        </button>
+                      </div>
+                    )}
+                    {listing.active && listing.buyer === ZERO_ADDR && (
+                      <div className="flex items-center justify-between">
+                        {listing.hasSetup ? (
+                          <button
+                            onClick={() => handleResumeListing(listing)}
+                            className="text-xs font-display tracking-wider text-gray-500 hover:neon-text-orange transition-colors"
+                          >
+                            Resume (step 4 — waiting for buyer)
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-gray-600 font-body">Waiting for buyer</span>
+                        )}
+                        <button
+                          onClick={() => handleCancelListing(listing.id)}
+                          disabled={cancellingId === listing.id}
+                          className="text-[10px] font-display tracking-wider text-red-400/50 hover:text-red-400/80 transition-colors"
+                        >
+                          {cancellingId === listing.id ? "Cancelling..." : "Cancel"}
+                        </button>
+                      </div>
+                    )}
+                    {!listing.active && (
+                      <p className="text-[10px] text-gray-600 font-body">This listing has been completed or cancelled.</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── NEW LISTING / RESUME create tab ── */}
+        {sellerTab === "create" && (
+          <div className="space-y-6">
+            {/* Step 1: Configure Item */}
+            <StepCard step={1} title="Configure Item" status={stepStatus(1)} accentColor="orange">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    ["Item ID", itemIdInput, setItemIdInput],
+                    ["Item Type", itemTypeInput, setItemTypeInput],
+                    ["Attributes", itemAttrInput, setItemAttrInput],
+                    ["Game ID", gameIdInput, setGameIdInput],
+                  ].map(([label, value, setter]) => (
+                    <div key={label as string}>
+                      <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">
+                        {label as string}
+                      </label>
+                      <input
+                        type="text"
+                        value={value as string}
+                        onChange={(e) => (setter as (v: string) => void)(e.target.value)}
+                        className="neon-input neon-input-orange w-full"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div>
                   <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">
-                    {label as string}
+                    Price (TON)
                   </label>
                   <input
                     type="text"
-                    value={value as string}
-                    onChange={(e) => (setter as (v: string) => void)(e.target.value)}
-                    className="neon-input neon-input-orange w-full"
+                    value={priceInput}
+                    onChange={(e) => setPriceInput(e.target.value)}
+                    className="neon-input neon-input-orange w-40"
                   />
                 </div>
-              ))}
-            </div>
-            <div>
-              <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">
-                Price (TON)
-              </label>
-              <input
-                type="text"
-                value={priceInput}
-                onChange={(e) => setPriceInput(e.target.value)}
-                className="neon-input neon-input-orange w-40"
-              />
-            </div>
-            <button onClick={() => setSellerStep(2)} className="neon-btn neon-btn-orange">
-              Continue
-            </button>
-          </div>
-        </StepCard>
-
-        {/* Step 2: Register Item */}
-        <StepCard step={2} title="Register Item On-Chain" status={stepStatus(2)} accentColor="orange">
-          <div className="space-y-3">
-            <p className="text-sm text-gray-500 font-body">
-              Generate your seller ZK keypair and register the item note on-chain.
-            </p>
-            {sellerStep === 2 && (
-              <div className="text-xs glass-panel p-3 space-y-1">
-                <p><span className="text-gray-600 font-display tracking-wider">ITEM ID</span> <span className="font-mono text-neon-orange/70">{itemIdInput}</span></p>
-                <p><span className="text-gray-600 font-display tracking-wider">GAME</span> <span className="font-mono text-neon-orange/70">{gameIdInput}</span></p>
-                <p><span className="text-gray-600 font-display tracking-wider">PRICE</span> <span className="font-mono text-neon-orange/70">{priceInput} TON</span></p>
+                <button onClick={() => setSellerStep(2)} className="neon-btn neon-btn-orange">
+                  Continue
+                </button>
               </div>
-            )}
-            <button onClick={handleSellerRegister} disabled={regPending} className="neon-btn neon-btn-orange">
-              {regPending ? "Registering..." : "Register Item"}
-            </button>
-            <TxStatus txHash={regTxHash} isPending={regPending} isConfirmed={regConfirmed} error={regError} />
-            {sellerSetup && (
-              <div className="text-xs glass-panel p-3 space-y-1">
-                <p><span className="text-gray-600 font-display tracking-wider">SELLER PK</span> <span className="font-mono text-neon-orange/70">{sellerSetup.seller.pk.x.toString(16).slice(0, 20)}...</span></p>
-                <p><span className="text-gray-600 font-display tracking-wider">NOTE HASH</span> <span className="font-mono text-neon-orange/70">{shortHash(toBytes32(sellerSetup.oldItemHash))}</span></p>
+            </StepCard>
+
+            {/* Step 2: Register Item */}
+            <StepCard step={2} title="Register Item On-Chain" status={stepStatus(2)} accentColor="orange">
+              <div className="space-y-3">
+                <p className="text-sm text-gray-500 font-body">
+                  Generate your seller ZK keypair and register the item note on-chain.
+                </p>
+                <button onClick={handleSellerRegister} disabled={regPending} className="neon-btn neon-btn-orange">
+                  {regPending ? "Registering..." : "Register Item"}
+                </button>
+                <TxStatus txHash={regTxHash} isPending={regPending} isConfirmed={regConfirmed} error={regError} />
+                {sellerSetup && (
+                  <div className="text-xs glass-panel p-3 space-y-1">
+                    <p><span className="text-gray-600 font-display tracking-wider">SELLER PK</span> <span className="font-mono text-neon-orange/70">{sellerSetup.seller.pk.x.toString(16).slice(0, 20)}...</span></p>
+                    <p><span className="text-gray-600 font-display tracking-wider">NOTE HASH</span> <span className="font-mono text-neon-orange/70">{shortHash(toBytes32(sellerSetup.oldItemHash))}</span></p>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </StepCard>
+            </StepCard>
 
-        {/* Step 3: List for Sale */}
-        <StepCard step={3} title="List for Sale" status={stepStatus(3)} accentColor="orange">
-          <div className="space-y-3">
-            <p className="text-sm text-gray-500 font-body">
-              List the registered item on the marketplace. Buyers will see it and can purchase.
-            </p>
-            <button onClick={handleListItem} disabled={listPending} className="neon-btn neon-btn-orange">
-              {listPending ? "Listing..." : "Create Listing"}
-            </button>
-            <TxStatus txHash={listTxHash} isPending={listPending} isConfirmed={listConfirmed} error={listError} />
-          </div>
-        </StepCard>
+            {/* Step 3: List for Sale */}
+            <StepCard step={3} title="List for Sale" status={stepStatus(3)} accentColor="orange">
+              <div className="space-y-3">
+                <p className="text-sm text-gray-500 font-body">
+                  List the registered item on the marketplace. Buyers will see it and can purchase.
+                </p>
+                <button onClick={handleListItem} disabled={listPending} className="neon-btn neon-btn-orange">
+                  {listPending ? "Listing..." : "Create Listing"}
+                </button>
+                <TxStatus txHash={listTxHash} isPending={listPending} isConfirmed={listConfirmed} error={listError} />
+                {listConfirmed && listingId !== null && (
+                  <p className="text-xs font-body text-gray-500">
+                    Listing #{listingId} created. Setup saved to local storage for resume.
+                  </p>
+                )}
+              </div>
+            </StepCard>
 
-        {/* Step 4: Waiting for Buyer */}
-        <StepCard step={4} title="Waiting for Buyer" status={stepStatus(4)} accentColor="orange">
-          <div className="space-y-3">
-            {sellerStep === 4 && (
-              <>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-neon-orange animate-pulse" />
-                  <p className="text-sm text-gray-500 font-body">
-                    Polling for buyer... (Listing #{listingId})
+            {/* Step 4: Waiting for Buyer */}
+            <StepCard step={4} title="Waiting for Buyer" status={stepStatus(4)} accentColor="orange">
+              <div className="space-y-3">
+                {sellerStep === 4 && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-neon-orange animate-pulse" />
+                      <p className="text-sm text-gray-500 font-body">
+                        Polling for buyer... (Listing #{listingId})
+                      </p>
+                    </div>
+                    <p className="text-xs text-gray-600 font-body">
+                      Share Listing #{listingId} with a buyer, or{" "}
+                      <button
+                        onClick={() => { setSellerTab("mylistings"); fetchMyListings(); }}
+                        className="neon-text-orange underline underline-offset-2"
+                      >
+                        view in My Listings
+                      </button>
+                      {" "}to come back later.
+                    </p>
+                  </>
+                )}
+                {sellerStep > 4 && activeListing && activeListing.buyer !== ZERO_ADDR && (
+                  <div className="text-xs glass-panel p-3 space-y-1">
+                    <p className="neon-text-green font-display tracking-wider text-xs">BUYER FOUND</p>
+                    <p><span className="text-gray-600 font-display tracking-wider">BUYER</span> <span className="font-mono text-gray-400">{activeListing.buyer.slice(0, 10)}...</span></p>
+                    <p><span className="text-gray-600 font-display tracking-wider">BUYER PK X</span> <span className="font-mono text-neon-orange/70">{activeListing.buyerPkX.toString(16).slice(0, 20)}...</span></p>
+                  </div>
+                )}
+              </div>
+            </StepCard>
+
+            {/* Step 5: Generate ZK Proof */}
+            <StepCard step={5} title="Generate ZK Proof" status={stepStatus(5)} accentColor="orange">
+              <div className="space-y-3">
+                <p className="text-sm text-gray-500 font-body">
+                  Use buyer's ZK pubkey from the listing to generate the ownership transfer proof.
+                </p>
+                {activeListing && activeListing.buyer !== ZERO_ADDR && sellerStep === 5 && (
+                  <div className="text-xs glass-panel p-3 space-y-1">
+                    <p><span className="text-gray-600 font-display tracking-wider">BUYER PK X</span> <span className="font-mono text-neon-orange/70">{activeListing.buyerPkX.toString(16).slice(0, 24)}...</span></p>
+                    <p><span className="text-gray-600 font-display tracking-wider">BUYER PK Y</span> <span className="font-mono text-neon-orange/70">{activeListing.buyerPkY.toString(16).slice(0, 24)}...</span></p>
+                  </div>
+                )}
+                <button
+                  onClick={handleGenerateProof}
+                  disabled={proof.isGenerating || sellerStep !== 5}
+                  className="neon-btn neon-btn-orange"
+                >
+                  {proof.isGenerating ? "Generating..." : "Generate ZK Proof"}
+                </button>
+                <ProofStatus
+                  isGenerating={proof.isGenerating}
+                  elapsed={proof.elapsed}
+                  error={proof.error}
+                  duration={proofResult?.duration}
+                />
+              </div>
+            </StepCard>
+
+            {/* Step 6: Execute Trade */}
+            <StepCard step={6} title="Execute Trade" status={stepStatus(6)} accentColor="orange">
+              <div className="space-y-3">
+                <p className="text-sm text-gray-500 font-body">
+                  Submit the ZK proof on-chain. Old note spent, new note created for buyer, payment released.
+                </p>
+                <button
+                  onClick={handleExecuteTrade}
+                  disabled={execPending || sellerStep !== 6}
+                  className="neon-btn neon-btn-orange"
+                >
+                  {execPending ? "Executing..." : "Execute Trade"}
+                </button>
+                <TxStatus txHash={execTxHash} isPending={execPending} isConfirmed={execConfirmed} error={execError} />
+              </div>
+            </StepCard>
+
+            {/* Done */}
+            {execConfirmed && tradeSetup && (
+              <div className="glass-panel border neon-border-green p-5">
+                <h3 className="font-display font-bold tracking-wider neon-text-green mb-3">TRADE COMPLETE</h3>
+                <div className="text-sm space-y-2 font-body">
+                  <p>
+                    <span className="text-gray-500">Old Note:</span>{" "}
+                    <span className="font-mono text-xs text-gray-400">{shortHash(toBytes32(tradeSetup.oldItemHash))}</span>{" "}
+                    <span className="neon-text-magenta">(Spent)</span>
+                  </p>
+                  <p>
+                    <span className="text-gray-500">New Note (buyer):</span>{" "}
+                    <span className="font-mono text-xs text-gray-400">{shortHash(toBytes32(tradeSetup.newItemHash))}</span>{" "}
+                    <span className="neon-text-green">(Valid)</span>
+                  </p>
+                  <p>
+                    <span className="text-gray-500">Payment released:</span>{" "}
+                    <span className="font-mono text-neon-orange/70">{priceInput} TON</span>
                   </p>
                 </div>
-                {activeListing && activeListing.buyer === ZERO_ADDR && (
-                  <p className="text-xs text-gray-600 font-body">No buyer yet. Share Listing #{listingId} with a buyer.</p>
-                )}
-              </>
-            )}
-            {sellerStep > 4 && activeListing && activeListing.buyer !== ZERO_ADDR && (
-              <div className="text-xs glass-panel p-3 space-y-1">
-                <p className="neon-text-green font-display tracking-wider text-xs">BUYER FOUND</p>
-                <p><span className="text-gray-600 font-display tracking-wider">BUYER</span> <span className="font-mono text-gray-400">{activeListing.buyer.slice(0, 10)}...</span></p>
-                <p><span className="text-gray-600 font-display tracking-wider">BUYER PK X</span> <span className="font-mono text-neon-orange/70">{activeListing.buyerPkX.toString(16).slice(0, 20)}...</span></p>
+                <button
+                  onClick={() => { setSellerTab("mylistings"); fetchMyListings(); }}
+                  className="mt-3 text-xs font-display tracking-wider neon-text-orange hover:underline"
+                >
+                  View My Listings →
+                </button>
               </div>
             )}
-          </div>
-        </StepCard>
-
-        {/* Step 5: Generate ZK Proof */}
-        <StepCard step={5} title="Generate ZK Proof" status={stepStatus(5)} accentColor="orange">
-          <div className="space-y-3">
-            <p className="text-sm text-gray-500 font-body">
-              Use buyer's ZK pubkey from the listing to generate the ownership transfer proof.
-            </p>
-            <button
-              onClick={handleGenerateProof}
-              disabled={proof.isGenerating || sellerStep !== 5}
-              className="neon-btn neon-btn-orange"
-            >
-              {proof.isGenerating ? "Generating..." : "Generate ZK Proof"}
-            </button>
-            <ProofStatus
-              isGenerating={proof.isGenerating}
-              elapsed={proof.elapsed}
-              error={proof.error}
-              duration={proofResult?.duration}
-            />
-          </div>
-        </StepCard>
-
-        {/* Step 6: Execute Trade */}
-        <StepCard step={6} title="Execute Trade" status={stepStatus(6)} accentColor="orange">
-          <div className="space-y-3">
-            <p className="text-sm text-gray-500 font-body">
-              Submit the ZK proof on-chain. The old item note is spent, a new one is created for the buyer, and payment is released to you.
-            </p>
-            <button
-              onClick={handleExecuteTrade}
-              disabled={execPending || sellerStep !== 6}
-              className="neon-btn neon-btn-orange"
-            >
-              {execPending ? "Executing..." : "Execute Trade"}
-            </button>
-            <TxStatus txHash={execTxHash} isPending={execPending} isConfirmed={execConfirmed} error={execError} />
-          </div>
-        </StepCard>
-
-        {/* Done */}
-        {execConfirmed && tradeSetup && (
-          <div className="glass-panel border neon-border-green p-5">
-            <h3 className="font-display font-bold tracking-wider neon-text-green mb-3">TRADE COMPLETE</h3>
-            <div className="text-sm space-y-2 font-body">
-              <p>
-                <span className="text-gray-500">Old Note:</span>{" "}
-                <span className="font-mono text-xs text-gray-400">{shortHash(toBytes32(tradeSetup.oldItemHash))}</span>{" "}
-                <span className="neon-text-magenta">(Spent)</span>
-              </p>
-              <p>
-                <span className="text-gray-500">New Note (buyer):</span>{" "}
-                <span className="font-mono text-xs text-gray-400">{shortHash(toBytes32(tradeSetup.newItemHash))}</span>{" "}
-                <span className="neon-text-green">(Valid)</span>
-              </p>
-              <p>
-                <span className="text-gray-500">Payment released:</span>{" "}
-                <span className="font-mono text-neon-orange/70">{priceInput} TON</span>
-              </p>
-            </div>
           </div>
         )}
       </div>
@@ -622,11 +990,9 @@ export function F5GamingItemTradePage() {
     <div className="max-w-2xl mx-auto space-y-6 stagger-in">
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-3">
-            <span className="font-display text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 border border-neon-cyan rounded neon-text-cyan">
-              BUYER
-            </span>
-          </div>
+          <span className="font-display text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 border border-neon-cyan rounded neon-text-cyan">
+            BUYER
+          </span>
           <button
             onClick={() => setRole(null)}
             className="text-xs text-gray-600 hover:text-gray-400 font-display tracking-wider"
@@ -703,7 +1069,7 @@ export function F5GamingItemTradePage() {
               <p><span className="text-gray-600">PK X:</span> <span className="font-mono text-neon-cyan/70">{buyerKeypair.pk.x.toString(16).slice(0, 24)}...</span></p>
               <p><span className="text-gray-600">PK Y:</span> <span className="font-mono text-neon-cyan/70">{buyerKeypair.pk.y.toString(16).slice(0, 24)}...</span></p>
               <p className="text-gray-600 mt-1 font-body">
-                Your secret key is kept in memory only. The seller will use your public key to create the new item note.
+                Your secret key is in memory only. The seller uses your public key for the ZK proof.
               </p>
             </div>
           )}
@@ -712,7 +1078,6 @@ export function F5GamingItemTradePage() {
             <p className="text-xs font-display tracking-wider text-gray-500">STEP 1: APPROVE TOKEN</p>
             <TxStatus txHash={approveTxHash} isPending={approvePending} isConfirmed={approveConfirmed} error={approveError} />
           </div>
-
           <div className="space-y-2">
             <p className="text-xs font-display tracking-wider text-gray-500">STEP 2: PURCHASE</p>
             <TxStatus txHash={purchaseTxHash} isPending={purchasePending} isConfirmed={purchaseConfirmed} error={purchaseError} />
@@ -733,13 +1098,13 @@ export function F5GamingItemTradePage() {
         <div className="glass-panel border neon-border-green p-5">
           <h3 className="font-display font-bold tracking-wider neon-text-green mb-2">PAYMENT SENT</h3>
           <p className="text-sm font-body text-gray-500">
-            Your TON has been placed in escrow and your ZK pubkey submitted. The seller will now generate the ZK proof and complete the trade. Once done, the item note will be transferred to your key.
+            TON placed in escrow, ZK pubkey submitted. The seller will generate the ZK proof and complete the trade.
           </p>
           {buyerKeypair && (
             <div className="text-xs glass-panel p-3 mt-3 space-y-1">
               <p className="text-gray-600 font-display tracking-wider">SAVE YOUR SECRET KEY</p>
               <p className="font-mono text-yellow-400/70 break-all">{buyerKeypair.sk.toString(16)}</p>
-              <p className="text-gray-600 font-body">You will need this to prove ownership of the received item.</p>
+              <p className="text-gray-600 font-body mt-1">You will need this to prove ownership of the received item.</p>
             </div>
           )}
         </div>

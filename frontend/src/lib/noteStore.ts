@@ -12,11 +12,20 @@ export interface StoredNote {
   createdAt: number;
 }
 
-const STORAGE_KEY = "neon-arena-notes";
+// Keyed by wallet address so different accounts have separate note stores.
+let _walletAddress = "default";
+
+export function setNoteStoreAddress(address: string) {
+  _walletAddress = address.toLowerCase();
+}
+
+function storageKey() {
+  return `neon-arena-notes-${_walletAddress}`;
+}
 
 function readAll(): StoredNote[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey());
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -24,7 +33,7 @@ function readAll(): StoredNote[] {
 }
 
 function writeAll(notes: StoredNote[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+  localStorage.setItem(storageKey(), JSON.stringify(notes));
 }
 
 export function getNotes(): StoredNote[] {
@@ -51,7 +60,7 @@ export function removeNote(id: string) {
 }
 
 export function clearNotes() {
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(storageKey());
 }
 
 export function exportNotes(): string {
