@@ -15,8 +15,19 @@ export interface StoredNote {
 // Keyed by wallet address so different accounts have separate note stores.
 let _walletAddress = "default";
 
+const LEGACY_KEY = "neon-arena-notes";
+
 export function setNoteStoreAddress(address: string) {
   _walletAddress = address.toLowerCase();
+  // One-time migration: move data from the old shared key to the address-specific key.
+  const newKey = storageKey();
+  if (!localStorage.getItem(newKey)) {
+    const legacy = localStorage.getItem(LEGACY_KEY);
+    if (legacy) {
+      localStorage.setItem(newKey, legacy);
+      localStorage.removeItem(LEGACY_KEY);
+    }
+  }
 }
 
 function storageKey() {

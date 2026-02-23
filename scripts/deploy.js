@@ -31,6 +31,8 @@ async function main() {
 
   // ─── Deploy feature contracts ───
   const BOX_PRICE = hre.ethers.parseEther("10"); // 10 TON per box
+  const ENTRY_FEE = hre.ethers.parseEther("10"); // 10 TON per game entry
+  const DEFAULT_TIMEOUT = 60; // 60 seconds
 
   const deployments = [
     {
@@ -54,6 +56,12 @@ async function main() {
       verifier: "contracts/verifiers/CardDrawVerifier.sol:Groth16Verifier",
       main: "CardDraw",
       key: "cardDraw",
+    },
+    {
+      verifier: "contracts/verifiers/CardDrawVerifier.sol:Groth16Verifier",
+      main: "CardDrawGame",
+      key: "cardDrawGame",
+      args: (verifierAddr) => [verifierAddr, tonAddr, ENTRY_FEE, DEFAULT_TIMEOUT],
     },
   ];
 

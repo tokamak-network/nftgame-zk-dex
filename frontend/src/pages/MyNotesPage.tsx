@@ -19,7 +19,7 @@ const STATE_LABELS: Record<number, { text: string; class: string }> = {
 type ChainState = Record<string, number | null>; // noteId -> state (0/1/2) or null if can't query
 
 export function MyNotesPage() {
-  const { signer, isConnected } = useWallet();
+  const { signer, isConnected, address } = useWallet();
   const privateNFT = useContract("PrivateNFT", signer);
   const gamingItemTrade = useContract("GamingItemTrade", signer);
 
@@ -34,9 +34,12 @@ export function MyNotesPage() {
     setNotes(getNotes());
   }, []);
 
+  // Reload notes whenever wallet address changes (connect / switch account / disconnect).
+  // _walletAddress in noteStore is already updated by setNoteStoreAddress() before
+  // React sets the new address in state, so reading here picks up the correct bucket.
   useEffect(() => {
     loadNotes();
-  }, [loadNotes]);
+  }, [address, loadNotes]);
 
   // Query chain state for notes that support getNoteState
   const refreshChainStates = useCallback(async () => {
@@ -303,7 +306,7 @@ export function MyNotesPage() {
             {notes.length} note{notes.length !== 1 ? "s" : ""} stored locally
           </span>
           <span className="text-gray-700 font-mono">
-            {Math.round(new Blob([localStorage.getItem("neon-arena-notes") || ""]).size / 1024)}KB
+            {Math.round(new Blob([localStorage.getItem(`neon-arena-notes-${(address ?? "default").toLowerCase()}`) || ""]).size / 1024)}KB
           </span>
         </div>
       )}
