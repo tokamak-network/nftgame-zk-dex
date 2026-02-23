@@ -10,21 +10,28 @@ import {
   generateF8Proof,
   getCardName,
   getCardColor,
+  type F8SetupResult,
 } from "../lib/cardUtils";
 import { toBytes32 } from "../lib/crypto";
 import { ethers } from "ethers";
 
-type GameStatus = "Open" | "Finished" | "Cancelled";
-const STATUS_MAP: GameStatus[] = ["Open", "Finished", "Cancelled"];
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type GameStatus = "Open" | "PendingReveal" | "Revealing" | "Finished" | "Cancelled";
+const STATUS_MAP: GameStatus[] = ["Open", "PendingReveal", "Revealing", "Finished", "Cancelled"];
 
 type GameInfo = {
   id: number;
   creator: string;
   status: GameStatus;
-  timeout: number;
+  commitTimeout: number;
   lastJoinTime: number;
   playerCount: number;
+  revealedCount: number;
   prizePool: bigint;
+  revealBlock: number;
+  revealSeed: bigint;
+  revealDeadline: number;
   winner: string;
   highestCardValue: number;
   createdAt: number;
@@ -32,8 +39,11 @@ type GameInfo = {
 
 type PlayerInfo = {
   addr: string;
+  deckCommitment: string;
+  playerCommitment: string;
   drawnCard: number;
-  hasDrawn: boolean;
+  hasCommitted: boolean;
+  hasRevealed: boolean;
 };
 
 type View = "list" | "room";
@@ -42,25 +52,87 @@ const ENTRY_FEE = ethers.parseEther("10");
 const MAX_PLAYERS = 5;
 const MIN_PLAYERS = 2;
 
+// ─── localStorage helpers for F8SetupResult persistence ──────────────────────
+
+function saveSetupResult(gameId: number, addr: string, result: F8SetupResult): void {
+  try {
+    const key = `f9-setup-${gameId}-${addr.toLowerCase()}`;
+    // BigInt serialization: store as strings
+    const serialized = JSON.stringify({
+      playerSk: result.player.sk.toString(),
+      playerPkX: result.player.pk.x.toString(),
+      playerPkY: result.player.pk.y.toString(),
+      deckCards: result.deckCards,
+      deckCommitment: result.deckCommitment.toString(),
+      deckSalt: result.deckSalt.toString(),
+      shuffleSeed: result.shuffleSeed.toString(),
+      gameId: result.gameId.toString(),
+      playerCommitment: result.playerCommitment.toString(),
+    });
+    localStorage.setItem(key, serialized);
+  } catch {
+    console.error("Failed to save setup result to localStorage");
+  }
+}
+
+function loadSetupResult(gameId: number, addr: string): F8SetupResult | null {
+  try {
+    const key = `f9-setup-${gameId}-${addr.toLowerCase()}`;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    return {
+      player: {
+        sk: BigInt(d.playerSk),
+        pk: { x: BigInt(d.playerPkX), y: BigInt(d.playerPkY) },
+      },
+      deckCards: d.deckCards,
+      deckCommitment: BigInt(d.deckCommitment),
+      deckSalt: BigInt(d.deckSalt),
+      shuffleSeed: BigInt(d.shuffleSeed),
+      gameId: BigInt(d.gameId),
+      playerCommitment: BigInt(d.playerCommitment),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Parse contract responses ────────────────────────────────────────────────
+
 function parseGame(raw: unknown[], id: number): GameInfo {
-  const r = raw as [string, bigint, bigint, bigint, bigint, bigint, string, bigint, bigint];
+  // solidity struct field order matches Game struct
+  // [creator, status, commitTimeout, lastJoinTime, playerCount, revealedCount,
+  //  prizePool, revealBlock, revealSeed, revealDeadline, winner, highestCardValue, createdAt]
+  const r = raw as [string, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, string, bigint, bigint];
   return {
     id,
     creator: r[0],
     status: STATUS_MAP[Number(r[1])],
-    timeout: Number(r[2]),
+    commitTimeout: Number(r[2]),
     lastJoinTime: Number(r[3]),
     playerCount: Number(r[4]),
-    prizePool: r[5],
-    winner: r[6],
-    highestCardValue: Number(r[7]),
-    createdAt: Number(r[8]),
+    revealedCount: Number(r[5]),
+    prizePool: r[6],
+    revealBlock: Number(r[7]),
+    revealSeed: r[8],
+    revealDeadline: Number(r[9]),
+    winner: r[10],
+    highestCardValue: Number(r[11]),
+    createdAt: Number(r[12]),
   };
 }
 
 function parsePlayer(raw: unknown[]): PlayerInfo {
-  const r = raw as [string, bigint, boolean];
-  return { addr: r[0], drawnCard: Number(r[1]), hasDrawn: r[2] };
+  const r = raw as [string, string, string, bigint, boolean, boolean];
+  return {
+    addr: r[0],
+    deckCommitment: r[1],
+    playerCommitment: r[2],
+    drawnCard: Number(r[3]),
+    hasCommitted: r[4],
+    hasRevealed: r[5],
+  };
 }
 
 function cardScore(card: number): number {
@@ -74,6 +146,15 @@ function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
+function formatCountdown(seconds: number): string {
+  if (seconds <= 0) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 export function CardDrawGamePage() {
   const { signer, address, isConnected } = useWallet();
   const gameContract = useContract("CardDrawGame", signer);
@@ -86,32 +167,62 @@ export function CardDrawGamePage() {
   const [selectedGame, setSelectedGame] = useState<GameInfo | null>(null);
   const [players, setPlayers] = useState<PlayerInfo[]>([]);
   const [now, setNow] = useState(Math.floor(Date.now() / 1000));
+  const [currentBlock, setCurrentBlock] = useState(0);
 
-  // Create game state
+  // Create game
   const [timeoutInput, setTimeoutInput] = useState("60");
   const [createPending, setCreatePending] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  // Join state
-  const [joinStep, setJoinStep] = useState<"idle" | "proving" | "approving" | "joining" | "done" | "error">("idle");
-  const [joinError, setJoinError] = useState<string | null>(null);
-  const [joinTxHash, setJoinTxHash] = useState<string | null>(null);
-  const [myCard, setMyCard] = useState<number | null>(null);
+  // Commit (join) state
+  const [commitStep, setCommitStep] = useState<"idle" | "computing" | "approving" | "submitting" | "done" | "error">("idle");
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [commitTxHash, setCommitTxHash] = useState<string | null>(null);
+  const [localSetup, setLocalSetup] = useState<F8SetupResult | null>(null);
 
-  // Close/Cancel state
-  const [closePending, setClosePending] = useState(false);
-  const [closeTxHash, setCloseTxHash] = useState<string | null>(null);
-  const [closeError, setCloseError] = useState<string | null>(null);
+  // Reveal state
+  const [revealStep, setRevealStep] = useState<"idle" | "proving" | "submitting" | "done" | "error">("idle");
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const [revealTxHash, setRevealTxHash] = useState<string | null>(null);
+  const [myRevealedCard, setMyRevealedCard] = useState<number | null>(null);
+
+  // startReveal / close / cancel tx state
+  const [actionPending, setActionPending] = useState(false);
+  const [actionTxHash, setActionTxHash] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // 1-second timer for countdown
+  // 1-second clock
   useEffect(() => {
-    const timer = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(timer);
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(t);
   }, []);
 
-  // Fetch all games
+  // Block number polling (for PendingReveal phase)
+  useEffect(() => {
+    if (!signer) return;
+    const fetchBlock = async () => {
+      try {
+        const n = await signer.provider.getBlockNumber();
+        setCurrentBlock(n);
+      } catch { /* ignore */ }
+    };
+    fetchBlock();
+    const t = setInterval(fetchBlock, 2000);
+    return () => clearInterval(t);
+  }, [signer]);
+
+  // Restore local setup from localStorage when entering room view
+  useEffect(() => {
+    if (view === "room" && selectedGameId && address) {
+      const saved = loadSetupResult(selectedGameId, address);
+      if (saved) setLocalSetup(saved);
+    }
+  }, [view, selectedGameId, address]);
+
+  // ── Polling ──────────────────────────────────────────────────────────────
+
   const fetchGames = useCallback(async () => {
     if (!gameContract) return;
     try {
@@ -123,40 +234,33 @@ export function CardDrawGamePage() {
       }
       setGames(fetched);
     } catch (err) {
-      console.error("Failed to fetch games:", err);
+      console.error("fetchGames failed:", err);
     }
   }, [gameContract]);
 
-  // Fetch selected game details
   const fetchGameDetail = useCallback(async () => {
     if (!gameContract || !selectedGameId) return;
     try {
       const raw = await gameContract.getGame(selectedGameId);
-      const game = parseGame(raw, selectedGameId);
-      setSelectedGame(game);
-
+      setSelectedGame(parseGame(raw, selectedGameId));
       const rawPlayers = await gameContract.getGamePlayers(selectedGameId);
       setPlayers(rawPlayers.map((p: unknown[]) => parsePlayer(p)));
     } catch (err) {
-      console.error("Failed to fetch game detail:", err);
+      console.error("fetchGameDetail failed:", err);
     }
   }, [gameContract, selectedGameId]);
 
-  // Polling: game list (5s) or game detail (3s)
   useEffect(() => {
     if (!gameContract) return;
-
     const poll = view === "list" ? fetchGames : fetchGameDetail;
     const interval = view === "list" ? 5000 : 3000;
-
     poll();
     pollRef.current = setInterval(poll, interval);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [gameContract, view, fetchGames, fetchGameDetail]);
 
-  // Create game
+  // ── Create Game ───────────────────────────────────────────────────────────
+
   async function handleCreateGame() {
     if (!gameContract) return;
     setCreatePending(true);
@@ -172,95 +276,201 @@ export function CardDrawGamePage() {
     }
   }
 
-  // Join game (atomic: proof → approve → joinGame)
+  // ── Commit Phase: joinGame ────────────────────────────────────────────────
+  // Phase 1: compute setup → approve → joinGame(deckCommitment, playerCommitment)
+  // No ZK proof. Player doesn't know their card yet.
+
   async function handleJoinGame(gameId: number) {
     if (!gameContract || !tokenContract || !address) return;
-    setJoinStep("proving");
-    setJoinError(null);
-    setJoinTxHash(null);
-    setMyCard(null);
-    proof.reset();
+    setCommitStep("computing");
+    setCommitError(null);
+    setCommitTxHash(null);
+    setLocalSetup(null);
 
     try {
-      // Step 1: Setup & prepare draw
-      const game = await setupF8Game(BigInt(gameId));
-      const drawData = await prepareF8Draw(game, 0);
+      // Compute deck setup (fisher-yates shuffle + commitments)
+      const setup = await setupF8Game(BigInt(gameId));
 
-      // Step 2: Generate ZK proof
-      const proofResult = await proof.generate(generateF8Proof, drawData.circuitInputs);
-      if (!proofResult) {
-        setJoinStep("error");
-        setJoinError("Proof generation failed");
-        return;
-      }
+      // Persist to localStorage (needed for the reveal phase, possibly after page reload)
+      saveSetupResult(gameId, address, setup);
+      setLocalSetup(setup);
 
-      // Step 3: Approve ERC20
-      setJoinStep("approving");
+      // Approve ERC20
+      setCommitStep("approving");
       const contractAddr = await gameContract.getAddress();
       const approveTx = await tokenContract.approve(contractAddr, ENTRY_FEE);
       await approveTx.wait();
 
-      // Step 4: Join game
-      setJoinStep("joining");
-      const { proof: p } = proofResult;
+      // Submit joinGame (no ZK proof)
+      setCommitStep("submitting");
       const tx = await gameContract.joinGame(
         gameId,
+        toBytes32(setup.deckCommitment),
+        toBytes32(setup.playerCommitment),
+      );
+      setCommitTxHash(tx.hash);
+      await tx.wait();
+
+      setCommitStep("done");
+      await fetchGameDetail();
+    } catch (err) {
+      setCommitStep("error");
+      setCommitError(err instanceof Error ? err.message : "Join failed");
+    }
+  }
+
+  // ── Reveal Phase: revealCard ──────────────────────────────────────────────
+  // Phase 2: query drawIndex from contract → generate ZK proof → revealCard
+
+  async function handleRevealCard(gameId: number) {
+    if (!gameContract || !address) return;
+
+    // Need the locally-saved F8SetupResult
+    const setup = localSetup ?? loadSetupResult(gameId, address);
+    if (!setup) {
+      setRevealStep("error");
+      setRevealError("Local deck data not found. Did you join from this browser?");
+      return;
+    }
+
+    setRevealStep("proving");
+    setRevealError(null);
+    setRevealTxHash(null);
+    setMyRevealedCard(null);
+    proof.reset();
+
+    try {
+      // Query the externally-determined drawIndex (from revealSeed + player address)
+      const drawIndex = Number(await gameContract.getPlayerDrawIndex(gameId, address));
+
+      // Prepare draw with the determined drawIndex
+      const drawData = await prepareF8Draw(setup, drawIndex);
+
+      // Generate ZK proof (~30s)
+      const proofResult = await proof.generate(generateF8Proof, drawData.circuitInputs);
+      if (!proofResult) {
+        setRevealStep("error");
+        setRevealError("Proof generation failed");
+        return;
+      }
+
+      // Submit revealCard
+      setRevealStep("submitting");
+      const { proof: p } = proofResult;
+      const tx = await gameContract.revealCard(
+        gameId,
         p.a, p.b, p.c,
-        toBytes32(game.deckCommitment),
         toBytes32(drawData.drawCommitment),
-        0, // drawIndex
-        toBytes32(game.playerCommitment),
         drawData.drawnCard,
       );
-      setJoinTxHash(tx.hash);
+      setRevealTxHash(tx.hash);
       await tx.wait();
 
-      setMyCard(drawData.drawnCard);
-      setJoinStep("done");
-
-      // Navigate to room view
-      setSelectedGameId(gameId);
-      setView("room");
+      setMyRevealedCard(drawData.drawnCard);
+      setRevealStep("done");
+      await fetchGameDetail();
     } catch (err) {
-      setJoinStep("error");
-      setJoinError(err instanceof Error ? err.message : "Join failed");
+      setRevealStep("error");
+      setRevealError(err instanceof Error ? err.message : "Reveal failed");
     }
   }
 
-  // Close game
-  async function handleCloseGame() {
-    if (!gameContract || !selectedGameId) return;
-    setClosePending(true);
-    setCloseError(null);
-    setCloseTxHash(null);
+  // ── finalizeReveal ─────────────────────────────────────────────────────────
+
+  async function handleFinalizeReveal(gameId: number) {
+    if (!gameContract) return;
+    setActionPending(true);
+    setActionError(null);
+    setActionTxHash(null);
     try {
-      const tx = await gameContract.closeGame(selectedGameId);
-      setCloseTxHash(tx.hash);
+      const tx = await gameContract.finalizeReveal(gameId);
+      setActionTxHash(tx.hash);
       await tx.wait();
       await fetchGameDetail();
     } catch (err) {
-      setCloseError(err instanceof Error ? err.message : "Close failed");
+      setActionError(err instanceof Error ? err.message : "finalizeReveal failed");
     } finally {
-      setClosePending(false);
+      setActionPending(false);
     }
   }
 
-  // Cancel game
-  async function handleCancelGame() {
-    if (!gameContract || !selectedGameId) return;
-    setClosePending(true);
-    setCloseError(null);
-    setCloseTxHash(null);
+  // ── startReveal ────────────────────────────────────────────────────────────
+
+  async function handleStartReveal(gameId: number) {
+    if (!gameContract) return;
+    setActionPending(true);
+    setActionError(null);
+    setActionTxHash(null);
     try {
-      const tx = await gameContract.cancelGame(selectedGameId);
-      setCloseTxHash(tx.hash);
+      const tx = await gameContract.startReveal(gameId);
+      setActionTxHash(tx.hash);
       await tx.wait();
       await fetchGameDetail();
     } catch (err) {
-      setCloseError(err instanceof Error ? err.message : "Cancel failed");
+      setActionError(err instanceof Error ? err.message : "startReveal failed");
     } finally {
-      setClosePending(false);
+      setActionPending(false);
     }
+  }
+
+  // ── closeGame ──────────────────────────────────────────────────────────────
+
+  async function handleCloseGame(gameId: number) {
+    if (!gameContract) return;
+    setActionPending(true);
+    setActionError(null);
+    setActionTxHash(null);
+    try {
+      const tx = await gameContract.closeGame(gameId);
+      setActionTxHash(tx.hash);
+      await tx.wait();
+      await fetchGameDetail();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "closeGame failed");
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  // ── cancelGame ────────────────────────────────────────────────────────────
+
+  async function handleCancelGame(gameId: number) {
+    if (!gameContract) return;
+    setActionPending(true);
+    setActionError(null);
+    setActionTxHash(null);
+    try {
+      const tx = await gameContract.cancelGame(gameId);
+      setActionTxHash(tx.hash);
+      await tx.wait();
+      setView("list");
+      await fetchGames();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "cancelGame failed");
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  // ── Navigate to room ──────────────────────────────────────────────────────
+
+  function openRoom(gameId: number) {
+    setSelectedGameId(gameId);
+    setSelectedGame(null);
+    setPlayers([]);
+    setCommitStep("idle");
+    setRevealStep("idle");
+    setActionError(null);
+    setActionTxHash(null);
+    proof.reset();
+    setView("room");
+  }
+
+  function backToList() {
+    setView("list");
+    setSelectedGameId(null);
+    setSelectedGame(null);
+    setPlayers([]);
   }
 
   if (!isConnected) {
@@ -272,34 +482,37 @@ export function CardDrawGamePage() {
     );
   }
 
-  // Game List View
+  // ────────────────────────────────────────────────────────────────────────────
+  // LIST VIEW
+  // ────────────────────────────────────────────────────────────────────────────
+
   if (view === "list") {
     return (
       <div className="max-w-2xl mx-auto space-y-6 stagger-in">
-        <div className="mb-6">
+        <div className="mb-4">
           <div className="flex items-center gap-3 mb-2">
             <span className="font-display text-[10px] font-bold tracking-[0.2em] px-2 py-0.5 border border-neon-yellow rounded neon-text-yellow">
-              MULTIPLAYER
+              MULTIPLAYER · COMMIT-REVEAL
             </span>
           </div>
           <h1 className="font-display text-2xl font-bold tracking-wider neon-text-yellow mb-1">
             F9: Card Draw Game
           </h1>
           <p className="text-sm font-body text-gray-500">
-            Join a game room, draw a card with ZK proof, and compete for the prize pool.
-            Entry fee: 10 TON. Highest card wins.
+            Two-phase fair game. Commit your deck, then reveal after on-chain randomness decides your draw position.
+            Entry: 10 TON · Highest card wins.
           </p>
         </div>
 
         {/* Create Game */}
         <div className="glass-panel border neon-border-yellow p-5">
           <h3 className="font-display font-bold text-sm tracking-wide neon-text-yellow mb-3">
-            CREATE NEW GAME
+            CREATE GAME
           </h3>
           <div className="flex items-end gap-3">
             <div className="flex-1">
               <label className="text-xs font-display tracking-wider text-gray-500 block mb-1">
-                Timeout (seconds)
+                Commit Timeout (seconds, min 30)
               </label>
               <input
                 type="number"
@@ -314,16 +527,14 @@ export function CardDrawGamePage() {
               disabled={createPending}
               className="neon-btn neon-btn-yellow"
             >
-              {createPending ? "Creating..." : "Create Game"}
+              {createPending ? "Creating..." : "Create"}
             </button>
           </div>
-          {createError && (
-            <p className="text-xs text-red-400 mt-2">{createError}</p>
-          )}
+          {createError && <p className="text-xs text-red-400 mt-2">{createError}</p>}
         </div>
 
-        {/* Game List */}
-        <div className="space-y-3">
+        {/* Game list */}
+        <div className="space-y-2">
           {games.length === 0 && (
             <div className="glass-panel border border-border-dim p-6 text-center">
               <p className="text-sm text-gray-500">No games yet. Create one!</p>
@@ -331,65 +542,79 @@ export function CardDrawGamePage() {
           )}
           {games.map((g) => {
             const isOpen = g.status === "Open";
-            const canJoin = isOpen && g.playerCount < MAX_PLAYERS;
-            const timeRemaining = g.playerCount >= MIN_PLAYERS && g.lastJoinTime > 0
-              ? g.lastJoinTime + g.timeout - now
-              : null;
-            const isExpired = timeRemaining !== null && timeRemaining <= 0;
-            const isReady = isOpen && g.playerCount >= MIN_PLAYERS && (isExpired || g.playerCount >= MAX_PLAYERS);
+            const isRevealing = g.status === "Revealing";
+            const commitRemaining = g.playerCount >= MIN_PLAYERS && g.lastJoinTime > 0
+              ? g.lastJoinTime + g.commitTimeout - now : null;
+            const revealRemaining = isRevealing && g.revealDeadline > 0
+              ? g.revealDeadline - now : null;
+            const commitExpired = commitRemaining !== null && commitRemaining <= 0;
+            const canJoin = isOpen && g.playerCount < MAX_PLAYERS && !commitExpired;
 
             return (
               <div
                 key={g.id}
                 className={`glass-panel border p-4 ${
-                  isOpen ? "neon-border-yellow" : g.status === "Finished" ? "border-neon-green/30" : "border-border-dim"
+                  isOpen ? "border-neon-yellow/40" :
+                  g.status === "PendingReveal" ? "border-neon-magenta/40" :
+                  isRevealing ? "border-neon-cyan/40" :
+                  g.status === "Finished" ? "border-neon-green/30" :
+                  "border-border-dim"
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <span className="font-display text-sm font-bold neon-text-yellow">
-                      #{g.id}
-                    </span>
-                    <span className="text-xs font-body text-gray-400">
-                      {g.playerCount}/{MAX_PLAYERS} players
-                    </span>
-                    <span className="text-xs font-mono neon-text-cyan">
-                      {ethers.formatEther(g.prizePool)} TON
-                    </span>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <span className="font-display text-sm font-bold neon-text-yellow">#{g.id}</span>
+                    <span className="text-xs text-gray-400">{g.playerCount}/{MAX_PLAYERS}</span>
+                    <span className="text-xs font-mono neon-text-cyan">{ethers.formatEther(g.prizePool)} TON</span>
+
                     {isOpen && g.playerCount < MIN_PLAYERS && (
-                      <span className="text-xs font-body text-gray-500">Waiting...</span>
+                      <span className="text-xs text-gray-500">Waiting for players...</span>
                     )}
-                    {isOpen && timeRemaining !== null && timeRemaining > 0 && (
+                    {isOpen && commitRemaining !== null && commitRemaining > 0 && (
                       <span className="text-xs font-mono neon-text-yellow">
-                        {Math.floor(timeRemaining / 60)}:{String(timeRemaining % 60).padStart(2, "0")}
+                        Commit: {formatCountdown(commitRemaining)}
                       </span>
                     )}
-                    {isReady && (
-                      <span className="text-[10px] font-display tracking-wider px-2 py-0.5 bg-neon-green/20 neon-text-green rounded">
+                    {isOpen && commitExpired && g.playerCount >= MIN_PLAYERS && (
+                      <span className="text-[10px] font-display tracking-wider px-1.5 py-0.5 bg-neon-cyan/20 neon-text-cyan rounded">
+                        START REVEAL
+                      </span>
+                    )}
+                    {g.status === "PendingReveal" && (
+                      <span className="text-[10px] font-display tracking-wider px-1.5 py-0.5 bg-neon-magenta/20 neon-text-magenta rounded">
+                        AWAITING BLOCK #{g.revealBlock}
+                      </span>
+                    )}
+                    {isRevealing && revealRemaining !== null && revealRemaining > 0 && (
+                      <span className="text-xs font-mono neon-text-cyan">
+                        Reveal: {formatCountdown(revealRemaining)}
+                      </span>
+                    )}
+                    {isRevealing && revealRemaining !== null && revealRemaining <= 0 && (
+                      <span className="text-[10px] font-display tracking-wider px-1.5 py-0.5 bg-neon-green/20 neon-text-green rounded">
                         READY TO CLOSE
                       </span>
                     )}
                     {g.status === "Finished" && (
-                      <span className="text-xs font-body text-gray-400">
+                      <span className="text-xs text-gray-400">
                         Winner: {getCardName(g.highestCardValue)}
                       </span>
                     )}
                     {g.status === "Cancelled" && (
-                      <span className="text-xs font-body text-gray-500">Cancelled</span>
+                      <span className="text-xs text-gray-500">Cancelled</span>
                     )}
                   </div>
-                  <div className="flex gap-2">
-                    {canJoin && !isExpired && (
+                  <div className="flex gap-2 shrink-0">
+                    {canJoin && (
                       <button
-                        onClick={() => handleJoinGame(g.id)}
-                        disabled={joinStep !== "idle" && joinStep !== "done" && joinStep !== "error"}
+                        onClick={() => { openRoom(g.id); }}
                         className="neon-btn neon-btn-yellow text-xs py-1.5 px-3"
                       >
                         JOIN
                       </button>
                     )}
                     <button
-                      onClick={() => { setSelectedGameId(g.id); setView("room"); }}
+                      onClick={() => openRoom(g.id)}
                       className="neon-btn neon-btn-cyan text-xs py-1.5 px-3"
                     >
                       VIEW
@@ -400,75 +625,51 @@ export function CardDrawGamePage() {
             );
           })}
         </div>
-
-        {/* Join Progress */}
-        {joinStep !== "idle" && (
-          <div className="glass-panel border neon-border-yellow p-5 space-y-3">
-            <h3 className="font-display font-bold text-sm tracking-wide neon-text-yellow">
-              JOINING GAME...
-            </h3>
-            {joinStep === "proving" && (
-              <ProofStatus
-                isGenerating={proof.isGenerating}
-                elapsed={proof.elapsed}
-                error={proof.error}
-                duration={proof.result?.duration}
-              />
-            )}
-            {joinStep === "approving" && (
-              <div className="glass-panel border border-neon-cyan/30 p-3 flex items-center gap-3">
-                <div className="w-4 h-4 border-2 border-neon-cyan border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm font-display tracking-wider neon-text-cyan">
-                  Approving ERC20 transfer...
-                </span>
-              </div>
-            )}
-            {joinStep === "joining" && (
-              <TxStatus txHash={joinTxHash} isPending={true} isConfirmed={false} error={null} />
-            )}
-            {joinStep === "done" && myCard !== null && (
-              <div className="glass-panel border border-neon-green/30 p-3 text-sm">
-                <span className="font-display text-xs tracking-wider neon-text-green mr-2">JOINED</span>
-                <span className="font-body text-gray-300">
-                  Your card: <span className={`font-bold ${getCardColor(myCard)}`}>{getCardName(myCard)}</span>
-                </span>
-              </div>
-            )}
-            {joinStep === "error" && (
-              <div className="glass-panel border border-red-500/50 p-3 text-sm text-red-400">
-                <span className="font-display text-xs tracking-wider text-red-500 mr-2">ERROR</span>
-                {joinError}
-              </div>
-            )}
-          </div>
-        )}
       </div>
     );
   }
 
-  // Game Room View
+  // ────────────────────────────────────────────────────────────────────────────
+  // ROOM VIEW
+  // ────────────────────────────────────────────────────────────────────────────
+
   const g = selectedGame;
-  const isCreator = g && address && g.creator.toLowerCase() === address.toLowerCase();
+  const isOpen = g?.status === "Open";
+  const isPendingReveal = g?.status === "PendingReveal";
+  const isRevealing = g?.status === "Revealing";
+  const isFinished = g?.status === "Finished";
+  const isCancelled = g?.status === "Cancelled";
+
   const amIPlayer = players.some(
     (p) => address && p.addr.toLowerCase() === address.toLowerCase()
   );
-  const isFinished = g?.status === "Finished";
-  const isCancelled = g?.status === "Cancelled";
-  const isOpen = g?.status === "Open";
+  const myPlayer = players.find(
+    (p) => address && p.addr.toLowerCase() === address.toLowerCase()
+  );
+  const isCreator = g && address && g.creator.toLowerCase() === address.toLowerCase();
 
-  const timeRemaining = g && g.playerCount >= MIN_PLAYERS && g.lastJoinTime > 0
-    ? g.lastJoinTime + g.timeout - now
-    : null;
-  const isExpired = timeRemaining !== null && timeRemaining <= 0;
-  const canClose = isOpen && g && g.playerCount >= MIN_PLAYERS && (isExpired || g.playerCount >= MAX_PLAYERS);
+  const commitRemaining = g && g.playerCount >= MIN_PLAYERS && g.lastJoinTime > 0
+    ? g.lastJoinTime + g.commitTimeout - now : null;
+  const commitExpired = commitRemaining !== null && commitRemaining <= 0;
+  const revealRemaining = isRevealing && g && g.revealDeadline > 0
+    ? g.revealDeadline - now : null;
+
+  const canStartReveal = isOpen && g && g.playerCount >= MIN_PLAYERS &&
+    (g.playerCount >= MAX_PLAYERS || commitExpired);
+  const canFinalizeReveal = isPendingReveal && g && currentBlock > g.revealBlock;
+  const canClose = isRevealing && g &&
+    (g.revealedCount === g.playerCount || (revealRemaining !== null && revealRemaining <= 0));
   const canCancel = isOpen && isCreator;
+  const canJoin = isOpen && !amIPlayer && g && g.playerCount < MAX_PLAYERS && !commitExpired;
+  const canReveal = isRevealing && amIPlayer && myPlayer && !myPlayer.hasRevealed &&
+    revealRemaining !== null && revealRemaining > 0;
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6 stagger-in">
+    <div className="max-w-2xl mx-auto space-y-5 stagger-in">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-2">
+      <div className="flex items-center gap-3 flex-wrap">
         <button
-          onClick={() => { setView("list"); setSelectedGameId(null); setSelectedGame(null); setPlayers([]); setCloseError(null); setCloseTxHash(null); }}
+          onClick={backToList}
           className="text-gray-500 hover:neon-text-yellow transition-colors font-display text-sm"
         >
           &larr; Back
@@ -480,19 +681,28 @@ export function CardDrawGamePage() {
           <>
             <span className={`text-[10px] font-display tracking-wider px-2 py-0.5 rounded ${
               isOpen ? "bg-neon-yellow/20 neon-text-yellow" :
+              isPendingReveal ? "bg-neon-magenta/20 neon-text-magenta" :
+              isRevealing ? "bg-neon-cyan/20 neon-text-cyan" :
               isFinished ? "bg-neon-green/20 neon-text-green" :
               "bg-gray-700 text-gray-400"
             }`}>
-              {g.status.toUpperCase()}
+              {g.status === "PendingReveal" ? "PENDING REVEAL" : g.status.toUpperCase()}
             </span>
-            {isOpen && timeRemaining !== null && timeRemaining > 0 && (
+            {isOpen && commitRemaining !== null && commitRemaining > 0 && (
               <span className="text-sm font-mono neon-text-yellow">
-                {Math.floor(timeRemaining / 60)}:{String(timeRemaining % 60).padStart(2, "0")}
+                Commit: {formatCountdown(commitRemaining)}
               </span>
             )}
-            {isOpen && isExpired && g.playerCount >= MIN_PLAYERS && (
-              <span className="text-[10px] font-display tracking-wider px-2 py-0.5 bg-neon-green/20 neon-text-green rounded">
-                READY TO CLOSE
+            {isPendingReveal && g.revealBlock > 0 && (
+              <span className="text-sm font-mono neon-text-magenta">
+                {currentBlock > g.revealBlock
+                  ? "Ready to finalize"
+                  : `Block ${g.revealBlock} (now: ${currentBlock})`}
+              </span>
+            )}
+            {isRevealing && revealRemaining !== null && (
+              <span className={`text-sm font-mono ${revealRemaining > 0 ? "neon-text-cyan" : "neon-text-green"}`}>
+                {revealRemaining > 0 ? `Reveal: ${formatCountdown(revealRemaining)}` : "READY TO CLOSE"}
               </span>
             )}
           </>
@@ -505,28 +715,61 @@ export function CardDrawGamePage() {
         </div>
       ) : (
         <>
-          {/* Game Info */}
-          <div className="glass-panel border neon-border-yellow p-5">
-            <div className="grid grid-cols-3 gap-4 text-center">
+          {/* Game Stats */}
+          <div className="glass-panel border neon-border-yellow p-4">
+            <div className="grid grid-cols-3 gap-3 text-center">
               <div>
                 <p className="text-[10px] font-display tracking-wider text-gray-500">PRIZE POOL</p>
                 <p className="font-mono text-lg neon-text-cyan">{ethers.formatEther(g.prizePool)} TON</p>
               </div>
               <div>
                 <p className="text-[10px] font-display tracking-wider text-gray-500">PLAYERS</p>
-                <p className="font-mono text-lg neon-text-yellow">{g.playerCount}/{MAX_PLAYERS}</p>
+                <p className="font-mono text-lg neon-text-yellow">
+                  {g.playerCount}/{MAX_PLAYERS}
+                  {isRevealing && ` (${g.revealedCount} revealed)`}
+                </p>
               </div>
               <div>
-                <p className="text-[10px] font-display tracking-wider text-gray-500">ENTRY FEE</p>
-                <p className="font-mono text-lg text-gray-300">10 TON</p>
+                <p className="text-[10px] font-display tracking-wider text-gray-500">PHASE</p>
+                <p className="font-mono text-sm text-gray-300">
+                  {isOpen ? "Commit" : isPendingReveal ? "Pending" : isRevealing ? "Reveal" : g.status}
+                </p>
               </div>
             </div>
+
+            {/* Phase explanation */}
+            {isOpen && (
+              <p className="text-[11px] font-body text-gray-600 mt-3 text-center">
+                Commit phase: players submit their deck commitment. Card position is unknown until reveal.
+              </p>
+            )}
+            {isPendingReveal && (
+              <div className="mt-3 text-center space-y-1">
+                <p className="text-[11px] font-body text-gray-500">
+                  Waiting for block <span className="font-mono neon-text-magenta">#{g.revealBlock}</span> to be mined.
+                  Seed is unknown to everyone until that block exists.
+                </p>
+                {currentBlock > 0 && (
+                  <p className="text-[11px] font-mono text-gray-600">
+                    Current block: {currentBlock} · Target: {g.revealBlock}
+                    {currentBlock > g.revealBlock
+                      ? " ✓ Ready"
+                      : ` · ${g.revealBlock - currentBlock} block(s) remaining`}
+                  </p>
+                )}
+              </div>
+            )}
+            {isRevealing && g.revealSeed !== 0n && (
+              <p className="text-[11px] font-body text-gray-600 mt-3 text-center">
+                Reveal phase: each player's draw position is determined by on-chain randomness. Seed: {g.revealSeed.toString().slice(0, 16)}...
+              </p>
+            )}
           </div>
 
-          {/* Players */}
+          {/* Player List */}
           <div className="glass-panel border border-border-dim p-5">
             <h3 className="font-display font-bold text-sm tracking-wide text-gray-400 mb-3">
-              PLAYERS ({g.playerCount}/{MAX_PLAYERS})
+              PLAYERS
             </h3>
             {players.length === 0 ? (
               <p className="text-sm text-gray-500">No players yet.</p>
@@ -534,7 +777,9 @@ export function CardDrawGamePage() {
               <div className="space-y-2">
                 {players.map((p, i) => {
                   const isMe = address && p.addr.toLowerCase() === address.toLowerCase();
-                  const showCard = isFinished || isCancelled;
+                  const showCard = (isFinished || isCancelled) && p.hasRevealed;
+                  const showMyCard = isMe && (myRevealedCard !== null) && p.hasRevealed;
+                  const displayCard = showMyCard ? myRevealedCard! : (showCard ? p.drawnCard : null);
 
                   return (
                     <div
@@ -543,10 +788,8 @@ export function CardDrawGamePage() {
                         isMe ? "bg-neon-yellow/10 border border-neon-yellow/30" : "bg-white/[0.02]"
                       }`}
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono text-xs text-gray-400">
-                          {shortAddr(p.addr)}
-                        </span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs text-gray-400">{shortAddr(p.addr)}</span>
                         {isMe && (
                           <span className="text-[10px] font-display tracking-wider px-1.5 py-0.5 bg-neon-yellow/20 neon-text-yellow rounded">
                             YOU
@@ -558,23 +801,30 @@ export function CardDrawGamePage() {
                           </span>
                         )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        {showCard ? (
-                          <span className={`font-display font-bold ${getCardColor(p.drawnCard)}`}>
-                            {getCardName(p.drawnCard)}
-                          </span>
-                        ) : isMe && myCard !== null ? (
-                          <span className={`font-display font-bold ${getCardColor(myCard)}`}>
-                            {getCardName(myCard)}
-                          </span>
-                        ) : (
-                          <span className="text-gray-600 font-mono text-sm">?</span>
+                      <div className="flex items-center gap-2 text-xs">
+                        {/* Status badges */}
+                        <span className={`text-[10px] font-mono ${p.hasCommitted ? "text-neon-yellow" : "text-gray-600"}`}>
+                          {p.hasCommitted ? "COMMITTED" : ""}
+                        </span>
+                        {p.hasRevealed && (
+                          <span className="text-[10px] font-mono neon-text-green">REVEALED</span>
                         )}
-                        {showCard && (
-                          <span className="text-[10px] font-mono text-gray-500">
-                            ({cardScore(p.drawnCard)}pts)
-                          </span>
+                        {isRevealing && !p.hasRevealed && (
+                          <span className="text-[10px] font-mono text-gray-500">PENDING</span>
                         )}
+                        {/* Card display */}
+                        {displayCard !== null ? (
+                          <>
+                            <span className={`font-display font-bold ${getCardColor(displayCard)}`}>
+                              {getCardName(displayCard)}
+                            </span>
+                            <span className="text-[10px] font-mono text-gray-500">
+                              ({cardScore(displayCard)}pts)
+                            </span>
+                          </>
+                        ) : (isRevealing || isFinished) ? (
+                          <span className="text-gray-600 font-mono">?</span>
+                        ) : null}
                       </div>
                     </div>
                   );
@@ -587,45 +837,40 @@ export function CardDrawGamePage() {
           {isFinished && (
             <div className="glass-panel border neon-border-green p-5 text-center">
               <p className="text-[10px] font-display tracking-[0.2em] text-gray-500 mb-1">WINNER</p>
-              <p className="font-display text-lg font-bold neon-text-green">
-                {shortAddr(g.winner)}
-              </p>
+              <p className="font-display text-lg font-bold neon-text-green">{shortAddr(g.winner)}</p>
               <div className="flex items-center justify-center gap-2 mt-2">
                 <span className={`font-display text-2xl font-bold ${getCardColor(g.highestCardValue)}`}>
                   {getCardName(g.highestCardValue)}
                 </span>
-                <span className="text-xs font-mono text-gray-500">
-                  ({cardScore(g.highestCardValue)}pts)
-                </span>
+                <span className="text-xs font-mono text-gray-500">({cardScore(g.highestCardValue)}pts)</span>
               </div>
               <p className="text-sm font-mono text-gray-400 mt-2">
-                Prize: {ethers.formatEther(g.prizePool * 90n / 100n)} TON
+                Prize: {ethers.formatEther(g.prizePool * BigInt(g.revealedCount) / BigInt(g.playerCount) * 90n / 100n)} TON
+                {g.revealedCount < g.playerCount && (
+                  <span className="text-gray-500 text-xs"> ({g.playerCount - g.revealedCount} forfeited)</span>
+                )}
               </p>
             </div>
           )}
 
-          {/* All Cards (after game ends) */}
-          {isFinished && players.length > 0 && (
+          {/* Revealed cards fan (after game ends) */}
+          {isFinished && players.filter((p) => p.hasRevealed).length > 0 && (
             <div className="glass-panel border border-border-dim p-5">
-              <h3 className="font-display font-bold text-sm tracking-wide text-gray-400 mb-3">
-                ALL CARDS
-              </h3>
-              <div className="flex justify-center gap-4 py-2">
+              <h3 className="font-display font-bold text-sm tracking-wide text-gray-400 mb-3">ALL REVEALED CARDS</h3>
+              <div className="flex justify-center gap-4 py-2 flex-wrap">
                 {[...players]
+                  .filter((p) => p.hasRevealed)
                   .sort((a, b) => cardScore(b.drawnCard) - cardScore(a.drawnCard))
                   .map((p, i) => {
                     const isWinner = g.winner.toLowerCase() === p.addr.toLowerCase();
                     const isRed = Math.floor(p.drawnCard / 13) === 1 || Math.floor(p.drawnCard / 13) === 2;
-
                     return (
                       <div key={i} className="text-center">
                         <div
                           className={`playing-card w-[70px] h-[100px] flex flex-col items-center justify-center mx-auto ${
                             isWinner ? "ring-2 ring-neon-green" : ""
                           }`}
-                          style={{
-                            borderColor: isRed ? "rgba(255, 0, 170, 0.3)" : "rgba(0, 240, 255, 0.3)",
-                          }}
+                          style={{ borderColor: isRed ? "rgba(255,0,170,0.3)" : "rgba(0,240,255,0.3)" }}
                         >
                           <span className={`font-display text-lg font-bold ${isRed ? "neon-text-magenta" : "neon-text-cyan"}`}>
                             {getCardName(p.drawnCard)}
@@ -639,46 +884,131 @@ export function CardDrawGamePage() {
             </div>
           )}
 
-          {/* Actions */}
-          {isOpen && (
-            <div className="flex gap-3">
-              {!amIPlayer && g.playerCount < MAX_PLAYERS && !(isExpired && g.playerCount >= MIN_PLAYERS) && (
-                <button
-                  onClick={() => handleJoinGame(g.id)}
-                  disabled={joinStep !== "idle" && joinStep !== "done" && joinStep !== "error"}
-                  className="neon-btn neon-btn-yellow flex-1"
-                >
-                  {joinStep === "proving" ? "Generating Proof..." :
-                   joinStep === "approving" ? "Approving..." :
-                   joinStep === "joining" ? "Joining..." :
-                   "JOIN GAME (10 TON)"}
-                </button>
+          {/* ── Action Buttons ─────────────────────────────────────── */}
+          <div className="space-y-3">
+            {/* JOIN (commit phase) */}
+            {canJoin && (
+              <button
+                onClick={() => handleJoinGame(g.id)}
+                disabled={commitStep !== "idle" && commitStep !== "done" && commitStep !== "error"}
+                className="neon-btn neon-btn-yellow w-full"
+              >
+                {commitStep === "computing" ? "Computing deck..." :
+                 commitStep === "approving" ? "Approving ERC20..." :
+                 commitStep === "submitting" ? "Submitting commit..." :
+                 "JOIN GAME — Commit Deck (10 TON)"}
+              </button>
+            )}
+
+            {/* REVEAL (reveal phase) */}
+            {canReveal && (
+              <button
+                onClick={() => handleRevealCard(g.id)}
+                disabled={revealStep !== "idle" && revealStep !== "error"}
+                className="neon-btn neon-btn-cyan w-full"
+              >
+                {revealStep === "proving" ? "Generating ZK proof..." :
+                 revealStep === "submitting" ? "Submitting reveal..." :
+                 "REVEAL CARD — Submit ZK Proof"}
+              </button>
+            )}
+
+            {/* START REVEAL */}
+            {canStartReveal && (
+              <button
+                onClick={() => handleStartReveal(g.id)}
+                disabled={actionPending}
+                className="neon-btn neon-btn-cyan w-full"
+              >
+                {actionPending ? "Starting reveal..." : "START REVEAL PHASE"}
+              </button>
+            )}
+
+            {/* FINALIZE REVEAL (PendingReveal → Revealing) */}
+            {isPendingReveal && !canFinalizeReveal && g.revealBlock > 0 && (
+              <div className="glass-panel border border-neon-magenta/30 p-3 text-center">
+                <p className="text-xs font-display tracking-wider neon-text-magenta">
+                  WAITING FOR BLOCK #{g.revealBlock}
+                </p>
+                <p className="text-[11px] text-gray-600 mt-1">
+                  Current: {currentBlock || "..."} · {g.revealBlock - (currentBlock || 0)} block(s) remaining
+                </p>
+              </div>
+            )}
+            {canFinalizeReveal && (
+              <button
+                onClick={() => handleFinalizeReveal(g.id)}
+                disabled={actionPending}
+                className="neon-btn neon-btn-magenta w-full"
+              >
+                {actionPending ? "Finalizing..." : `FINALIZE REVEAL — Derive Seed from Block #${g.revealBlock}`}
+              </button>
+            )}
+
+            {/* CLOSE GAME */}
+            {canClose && (
+              <button
+                onClick={() => handleCloseGame(g.id)}
+                disabled={actionPending}
+                className="neon-btn neon-btn-green w-full"
+              >
+                {actionPending ? "Closing..." : "CLOSE GAME — Determine Winner"}
+              </button>
+            )}
+
+            {/* CANCEL */}
+            {canCancel && (
+              <button
+                onClick={() => handleCancelGame(g.id)}
+                disabled={actionPending}
+                className="neon-btn neon-btn-magenta"
+              >
+                {actionPending ? "Cancelling..." : "CANCEL GAME"}
+              </button>
+            )}
+          </div>
+
+          {/* ── Commit Progress ───────────────────────────────────── */}
+          {commitStep !== "idle" && (
+            <div className="space-y-2">
+              {commitStep === "computing" && (
+                <div className="glass-panel border border-neon-yellow/30 p-3 flex items-center gap-3">
+                  <div className="w-4 h-4 border-2 border-neon-yellow border-t-transparent rounded-full animate-spin" />
+                  <span className="text-sm font-display tracking-wider neon-text-yellow">
+                    Computing deck commitment...
+                  </span>
+                </div>
               )}
-              {canClose && (
-                <button
-                  onClick={handleCloseGame}
-                  disabled={closePending}
-                  className="neon-btn neon-btn-green flex-1"
-                >
-                  {closePending ? "Closing..." : "CLOSE GAME"}
-                </button>
+              {commitStep === "approving" && (
+                <div className="glass-panel border border-neon-yellow/30 p-3 flex items-center gap-3">
+                  <div className="w-4 h-4 border-2 border-neon-yellow border-t-transparent rounded-full animate-spin" />
+                  <span className="text-sm font-display tracking-wider neon-text-yellow">Approving ERC20...</span>
+                </div>
               )}
-              {canCancel && (
-                <button
-                  onClick={handleCancelGame}
-                  disabled={closePending}
-                  className="neon-btn neon-btn-magenta"
-                >
-                  {closePending ? "Cancelling..." : "CANCEL"}
-                </button>
+              {commitStep === "submitting" && (
+                <TxStatus txHash={commitTxHash} isPending={true} isConfirmed={false} error={null} />
+              )}
+              {commitStep === "done" && (
+                <div className="glass-panel border border-neon-green/30 p-3 text-sm">
+                  <span className="font-display text-xs tracking-wider neon-text-green mr-2">COMMITTED</span>
+                  <span className="font-body text-gray-300">
+                    Deck committed. Wait for reveal phase to see your card.
+                  </span>
+                </div>
+              )}
+              {commitStep === "error" && (
+                <div className="glass-panel border border-red-500/50 p-3 text-sm text-red-400">
+                  <span className="font-display text-xs tracking-wider text-red-500 mr-2">ERROR</span>
+                  {commitError}
+                </div>
               )}
             </div>
           )}
 
-          {/* Join Progress (in room view) */}
-          {joinStep !== "idle" && joinStep !== "done" && (
-            <div className="space-y-3">
-              {joinStep === "proving" && (
+          {/* ── Reveal Progress ───────────────────────────────────── */}
+          {revealStep !== "idle" && (
+            <div className="space-y-2">
+              {revealStep === "proving" && (
                 <ProofStatus
                   isGenerating={proof.isGenerating}
                   elapsed={proof.elapsed}
@@ -686,33 +1016,36 @@ export function CardDrawGamePage() {
                   duration={proof.result?.duration}
                 />
               )}
-              {joinStep === "approving" && (
-                <div className="glass-panel border border-neon-cyan/30 p-3 flex items-center gap-3">
-                  <div className="w-4 h-4 border-2 border-neon-cyan border-t-transparent rounded-full animate-spin" />
-                  <span className="text-sm font-display tracking-wider neon-text-cyan">
-                    Approving ERC20 transfer...
+              {revealStep === "submitting" && (
+                <TxStatus txHash={revealTxHash} isPending={true} isConfirmed={false} error={null} />
+              )}
+              {revealStep === "done" && myRevealedCard !== null && (
+                <div className="glass-panel border border-neon-green/30 p-3 text-sm">
+                  <span className="font-display text-xs tracking-wider neon-text-green mr-2">REVEALED</span>
+                  <span className="font-body text-gray-300">
+                    Your card:{" "}
+                    <span className={`font-bold font-display ${getCardColor(myRevealedCard)}`}>
+                      {getCardName(myRevealedCard)}
+                    </span>
                   </span>
                 </div>
               )}
-              {joinStep === "joining" && (
-                <TxStatus txHash={joinTxHash} isPending={true} isConfirmed={false} error={null} />
-              )}
-              {joinStep === "error" && (
+              {revealStep === "error" && (
                 <div className="glass-panel border border-red-500/50 p-3 text-sm text-red-400">
                   <span className="font-display text-xs tracking-wider text-red-500 mr-2">ERROR</span>
-                  {joinError}
+                  {revealError}
                 </div>
               )}
             </div>
           )}
 
-          {/* Close/Cancel status */}
-          {(closeTxHash || closeError) && (
+          {/* ── Action Tx Status ──────────────────────────────────── */}
+          {(actionTxHash || actionError) && (
             <TxStatus
-              txHash={closeTxHash}
-              isPending={closePending}
-              isConfirmed={!closePending && !!closeTxHash}
-              error={closeError}
+              txHash={actionTxHash}
+              isPending={actionPending}
+              isConfirmed={!actionPending && !!actionTxHash}
+              error={actionError}
             />
           )}
         </>
