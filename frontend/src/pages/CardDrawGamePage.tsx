@@ -103,8 +103,8 @@ function loadSetupResult(gameId: number, addr: string): F8SetupResult | null {
 function parseGame(raw: unknown[], id: number): GameInfo {
   // solidity struct field order matches Game struct
   // [creator, status, commitTimeout, lastJoinTime, playerCount, revealedCount,
-  //  prizePool, revealBlock, revealSeed, revealDeadline, winner, highestCardValue, createdAt]
-  const r = raw as [string, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, string, bigint, bigint];
+  //  prizePool, revealBlock, prevRandaoSnapshot, revealSeed, revealDeadline, winner, highestCardValue, createdAt]
+  const r = raw as [string, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, string, bigint, bigint];
   return {
     id,
     creator: r[0],
@@ -115,11 +115,12 @@ function parseGame(raw: unknown[], id: number): GameInfo {
     revealedCount: Number(r[5]),
     prizePool: r[6],
     revealBlock: Number(r[7]),
-    revealSeed: r[8],
-    revealDeadline: Number(r[9]),
-    winner: r[10],
-    highestCardValue: Number(r[11]),
-    createdAt: Number(r[12]),
+    // r[8] = prevRandaoSnapshot (not needed in UI)
+    revealSeed: r[9],
+    revealDeadline: Number(r[10]),
+    winner: r[11],
+    highestCardValue: Number(r[12]),
+    createdAt: Number(r[13]),
   };
 }
 

@@ -56,9 +56,10 @@ contract CardDrawGame {
         uint256 playerCount;
         uint256 revealedCount;
         uint256 prizePool;
-        uint256 revealBlock;       // target block for seed (set by startReveal, doesn't exist yet)
-        uint256 revealSeed;        // set by finalizeReveal() using blockhash(revealBlock)
-        uint256 revealDeadline;    // set by finalizeReveal(): finalizeTime + REVEAL_TIMEOUT
+        uint256 revealBlock;           // target block for seed (set by startReveal, doesn't exist yet)
+        uint256 prevRandaoSnapshot;    // block.prevrandao captured at startReveal time
+        uint256 revealSeed;            // set by finalizeReveal(): keccak256(blockhash(revealBlock), prevRandaoSnapshot)
+        uint256 revealDeadline;        // set by finalizeReveal(): finalizeTime + REVEAL_TIMEOUT
         address winner;
         uint256 highestCardValue;
         uint256 createdAt;
@@ -119,6 +120,7 @@ contract CardDrawGame {
             revealedCount: 0,
             prizePool: 0,
             revealBlock: 0,
+            prevRandaoSnapshot: 0,
             revealSeed: 0,
             revealDeadline: 0,
             winner: address(0),
@@ -192,6 +194,12 @@ contract CardDrawGame {
      *      Sets revealBlock = block.number + 2.
      *      That block does not exist yet, so no one can know blockhash(revealBlock)
      *      at call time — preventing validator seed cherry-picking.
+     *
+     *      Also snapshots block.prevrandao at this moment.
+     *      Final seed = keccak256(blockhash(revealBlock), prevRandaoSnapshot).
+     *      Manipulating the seed requires colluding BOTH:
+     *        - the startReveal caller (controls prevRandaoSnapshot timing), AND
+     *        - the revealBlock producer (controls blockhash).
      */
     function startReveal(uint256 gameId) external {
         Game storage game = games[gameId];
@@ -204,16 +212,18 @@ contract CardDrawGame {
         );
 
         game.revealBlock = block.number + 2;
+        game.prevRandaoSnapshot = block.prevrandao;
         game.status = GameStatus.PendingReveal;
 
         emit RevealPending(gameId, game.revealBlock);
     }
 
     /**
-     * @dev Phase 1.5 → 2: Derive revealSeed from the now-known target block hash.
+     * @dev Phase 1.5 → 2: Derive revealSeed from the now-known target block hash
+     *      combined with the prevrandao snapshot captured at startReveal.
      *      Anyone can call once block.number > revealBlock.
      *
-     *      revealSeed = blockhash(revealBlock)
+     *      revealSeed = keccak256(blockhash(revealBlock), prevRandaoSnapshot)
      *      drawIndex  = keccak256(revealSeed, playerAddr, gameId) % 52
      *
      *      Note: blockhash() returns 0 for blocks older than 256. Call within ~51 min.
@@ -226,7 +236,7 @@ contract CardDrawGame {
         bytes32 blockHash = blockhash(game.revealBlock);
         require(blockHash != bytes32(0), "Block hash unavailable (>256 blocks passed)");
 
-        game.revealSeed = uint256(blockHash);
+        game.revealSeed = uint256(keccak256(abi.encodePacked(blockHash, game.prevRandaoSnapshot)));
         game.revealDeadline = block.timestamp + REVEAL_TIMEOUT;
         game.status = GameStatus.Revealing;
 

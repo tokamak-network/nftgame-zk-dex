@@ -222,6 +222,50 @@ describe("CardDrawGame (Commit-Reveal)", function () {
       const game = await cardDrawGame.getGame(gameId);
       expect(game.playerCount).to.equal(3);
     });
+
+    it("should reject join on non-existent gameId", async function () {
+      await mockToken.connect(player1).approve(await cardDrawGame.getAddress(), ENTRY_FEE);
+      await expect(
+        cardDrawGame.connect(player1).joinGame(
+          999,
+          ethers.keccak256(ethers.toUtf8Bytes("deck")),
+          ethers.keccak256(ethers.toUtf8Bytes("player"))
+        )
+      ).to.be.revertedWith("Game does not exist");
+    });
+
+    it("should reject join on Cancelled game", async function () {
+      await cardDrawGame.cancelGame(gameId); // creator cancels empty game
+      await mockToken.connect(player1).approve(await cardDrawGame.getAddress(), ENTRY_FEE);
+      await expect(
+        cardDrawGame.connect(player1).joinGame(
+          gameId,
+          ethers.keccak256(ethers.toUtf8Bytes("deck")),
+          ethers.keccak256(ethers.toUtf8Bytes("player"))
+        )
+      ).to.be.revertedWith("Game is not in commit phase");
+    });
+
+    it("should reject join on Finished game", async function () {
+      await commitDeck(player1, gameId);
+      await commitDeck(player2, gameId);
+      await time.increase(COMMIT_TIMEOUT + 1);
+      await cardDrawGame.startReveal(gameId);
+      await mine(3);
+      await cardDrawGame.finalizeReveal(gameId);
+      await revealCard(player1, gameId, 0);
+      await revealCard(player2, gameId, 12);
+      await cardDrawGame.closeGame(gameId);
+
+      await mockToken.connect(player3).approve(await cardDrawGame.getAddress(), ENTRY_FEE);
+      await expect(
+        cardDrawGame.connect(player3).joinGame(
+          gameId,
+          ethers.keccak256(ethers.toUtf8Bytes("deck")),
+          ethers.keccak256(ethers.toUtf8Bytes("player"))
+        )
+      ).to.be.revertedWith("Game is not in commit phase");
+    });
   });
 
   // ── startReveal ────────────────────────────────────────────────────────────
@@ -365,6 +409,42 @@ describe("CardDrawGame (Commit-Reveal)", function () {
       // Different players almost certainly get different indices
       // (collision probability = 1/52, acceptable in a test)
     });
+
+    it("should store prevRandaoSnapshot during startReveal", async function () {
+      const game = await cardDrawGame.getGame(gameId);
+      // prevRandaoSnapshot is captured in startReveal (called in beforeEach)
+      expect(game.prevRandaoSnapshot).to.not.be.undefined;
+    });
+
+    it("revealSeed should equal keccak256(blockhash, prevRandaoSnapshot)", async function () {
+      await mine(3);
+      await cardDrawGame.finalizeReveal(gameId);
+
+      const game = await cardDrawGame.getGame(gameId);
+      const block = await ethers.provider.getBlock(Number(game.revealBlock));
+
+      // Replicate: keccak256(abi.encodePacked(blockHash, prevRandaoSnapshot))
+      const expectedSeed = BigInt(
+        ethers.keccak256(
+          ethers.solidityPacked(
+            ["bytes32", "uint256"],
+            [block.hash, game.prevRandaoSnapshot]
+          )
+        )
+      );
+      expect(game.revealSeed).to.equal(expectedSeed);
+    });
+
+    it("getPlayerDrawIndex returns same value on multiple calls", async function () {
+      await mine(3);
+      await cardDrawGame.finalizeReveal(gameId);
+
+      const idx1 = await cardDrawGame.getPlayerDrawIndex(gameId, player1.address);
+      const idx2 = await cardDrawGame.getPlayerDrawIndex(gameId, player1.address);
+      const idx3 = await cardDrawGame.getPlayerDrawIndex(gameId, player1.address);
+      expect(idx1).to.equal(idx2);
+      expect(idx2).to.equal(idx3);
+    });
   });
 
   // ── revealCard ─────────────────────────────────────────────────────────────
@@ -483,6 +563,13 @@ describe("CardDrawGame (Commit-Reveal)", function () {
       const idx = await cardDrawGame.getPlayerDrawIndex(gameId, player1.address);
       expect(idx).to.be.gte(0);
       expect(idx).to.be.lt(52);
+    });
+
+    it("should allow reveal with card index 51 (max valid boundary)", async function () {
+      await revealCard(player1, gameId, 51);
+      const players = await cardDrawGame.getGamePlayers(gameId);
+      expect(players[0].hasRevealed).to.be.true;
+      expect(players[0].drawnCard).to.equal(51);
     });
   });
 
@@ -634,6 +721,84 @@ describe("CardDrawGame (Commit-Reveal)", function () {
         .to.emit(cardDrawGame, "GameFinished");
     });
 
+    it("should reject closeGame on Open game", async function () {
+      await commitDeck(player1, gameId);
+      await commitDeck(player2, gameId);
+      await expect(cardDrawGame.closeGame(gameId))
+        .to.be.revertedWith("Game is not in reveal phase");
+    });
+
+    it("should reject closeGame on PendingReveal game", async function () {
+      await commitDeck(player1, gameId);
+      await commitDeck(player2, gameId);
+      await time.increase(COMMIT_TIMEOUT + 1);
+      await cardDrawGame.startReveal(gameId);
+      await expect(cardDrawGame.closeGame(gameId))
+        .to.be.revertedWith("Game is not in reveal phase");
+    });
+
+    it("should reject closeGame on already Finished game", async function () {
+      await runCommitPhase(gameId, [player1, player2]);
+      await revealCard(player1, gameId, 0);
+      await revealCard(player2, gameId, 12);
+      await cardDrawGame.closeGame(gameId);
+
+      await expect(cardDrawGame.closeGame(gameId))
+        .to.be.revertedWith("Game is not in reveal phase");
+    });
+
+    it("should calculate prize correctly when 2 of 3 players reveal", async function () {
+      await commitDeck(player1, gameId);
+      await commitDeck(player2, gameId);
+      await commitDeck(player3, gameId);
+      await time.increase(COMMIT_TIMEOUT + 1);
+      await cardDrawGame.startReveal(gameId);
+      await mine(3);
+      await cardDrawGame.finalizeReveal(gameId);
+
+      await revealCard(player1, gameId, 0);  // Ace of Spades (winner)
+      await revealCard(player2, gameId, 12); // King of Spades
+      // player3 does not reveal → forfeit
+
+      await time.increase(REVEAL_TIMEOUT + 1);
+
+      const bal1Before = await mockToken.balanceOf(player1.address);
+      await cardDrawGame.closeGame(gameId);
+      const bal1After = await mockToken.balanceOf(player1.address);
+
+      // revealedPool = 2 * ENTRY_FEE, fee 10%, prize = 18 TON
+      const expectedPrize = ENTRY_FEE * 2n * 90n / 100n;
+      expect(bal1After - bal1Before).to.equal(expectedPrize);
+
+      // accumulatedFees = 10% of revealed pool + 1 forfeited entry fee
+      const expectedFees = ENTRY_FEE * 2n / 10n + ENTRY_FEE;
+      expect(await cardDrawGame.accumulatedFees()).to.equal(expectedFees);
+    });
+
+    it("should calculate prize correctly when 1 of 5 players reveal", async function () {
+      for (const p of [player1, player2, player3, player4, player5]) {
+        await commitDeck(p, gameId);
+      }
+      await cardDrawGame.startReveal(gameId);
+      await mine(3);
+      await cardDrawGame.finalizeReveal(gameId);
+
+      await revealCard(player1, gameId, 0); // only player1 reveals
+      await time.increase(REVEAL_TIMEOUT + 1);
+
+      const bal1Before = await mockToken.balanceOf(player1.address);
+      await cardDrawGame.closeGame(gameId);
+      const bal1After = await mockToken.balanceOf(player1.address);
+
+      // revealedPool = 1 * ENTRY_FEE, fee 10%, prize = 9 TON
+      const expectedPrize = ENTRY_FEE * 90n / 100n;
+      expect(bal1After - bal1Before).to.equal(expectedPrize);
+
+      // accumulatedFees = 10% of 1 entry + 4 forfeited entries
+      const expectedFees = ENTRY_FEE / 10n + ENTRY_FEE * 4n;
+      expect(await cardDrawGame.accumulatedFees()).to.equal(expectedFees);
+    });
+
     it("should allow close via MAX_PLAYERS path", async function () {
       for (const p of [player1, player2, player3, player4, player5]) {
         await commitDeck(p, gameId);
@@ -745,6 +910,11 @@ describe("CardDrawGame (Commit-Reveal)", function () {
       await expect(cardDrawGame.connect(player1).withdrawFees(player1.address))
         .to.be.revertedWith("Only admin can withdraw fees");
     });
+
+    it("should reject withdrawFees when no fees accumulated", async function () {
+      await expect(cardDrawGame.withdrawFees(owner.address))
+        .to.be.revertedWith("No fees to withdraw");
+    });
   });
 
   // ── getters ────────────────────────────────────────────────────────────────
@@ -776,6 +946,81 @@ describe("CardDrawGame (Commit-Reveal)", function () {
       const players = await cardDrawGame.getGamePlayers(1);
       expect(players[0].hasRevealed).to.be.true;
       expect(players[0].drawnCard).to.equal(25);
+    });
+  });
+
+  // ── concurrent games ───────────────────────────────────────────────────────
+
+  describe("concurrent games", function () {
+    it("two concurrent games do not interfere with each other", async function () {
+      await cardDrawGame.createGame(COMMIT_TIMEOUT); // gameId 1
+      await cardDrawGame.createGame(COMMIT_TIMEOUT); // gameId 2
+
+      await commitDeck(player1, 1);
+      await commitDeck(player2, 1);
+      await commitDeck(player3, 2);
+      await commitDeck(player4, 2);
+
+      await time.increase(COMMIT_TIMEOUT + 1);
+      await cardDrawGame.startReveal(1);
+      await cardDrawGame.startReveal(2);
+      await mine(3);
+      await cardDrawGame.finalizeReveal(1);
+      await cardDrawGame.finalizeReveal(2);
+
+      await revealCard(player1, 1, 0);
+      await revealCard(player2, 1, 12);
+      await revealCard(player3, 2, 5);
+      await revealCard(player4, 2, 10);
+
+      await cardDrawGame.closeGame(1);
+      await cardDrawGame.closeGame(2);
+
+      const game1 = await cardDrawGame.getGame(1);
+      const game2 = await cardDrawGame.getGame(2);
+      expect(game1.status).to.equal(STATUS.Finished);
+      expect(game2.status).to.equal(STATUS.Finished);
+      // Winners are independent
+      expect(game1.winner).to.not.equal(ethers.ZeroAddress);
+      expect(game2.winner).to.not.equal(ethers.ZeroAddress);
+    });
+
+    it("same player can join different games simultaneously", async function () {
+      await cardDrawGame.createGame(COMMIT_TIMEOUT); // gameId 1
+      await cardDrawGame.createGame(COMMIT_TIMEOUT); // gameId 2
+
+      await commitDeck(player1, 1);
+      await commitDeck(player2, 1);
+      await commitDeck(player1, 2); // player1 joins game 2 as well
+      await commitDeck(player3, 2);
+
+      const game1 = await cardDrawGame.getGame(1);
+      const game2 = await cardDrawGame.getGame(2);
+      expect(game1.playerCount).to.equal(2);
+      expect(game2.playerCount).to.equal(2);
+      expect(await cardDrawGame.hasJoined(1, player1.address)).to.be.true;
+      expect(await cardDrawGame.hasJoined(2, player1.address)).to.be.true;
+    });
+
+    it("player in game 1 cannot reveal in game 2", async function () {
+      await cardDrawGame.createGame(COMMIT_TIMEOUT); // gameId 1
+      await cardDrawGame.createGame(COMMIT_TIMEOUT); // gameId 2
+
+      await commitDeck(player1, 1);
+      await commitDeck(player2, 1);
+      await commitDeck(player3, 2);
+      await commitDeck(player4, 2);
+
+      await time.increase(COMMIT_TIMEOUT + 1);
+      await cardDrawGame.startReveal(1);
+      await cardDrawGame.startReveal(2);
+      await mine(3);
+      await cardDrawGame.finalizeReveal(1);
+      await cardDrawGame.finalizeReveal(2);
+
+      // player1 is only in game 1, should fail in game 2
+      await expect(revealCard(player1, 2, 10))
+        .to.be.revertedWith("Not a player in this game");
     });
   });
 });
