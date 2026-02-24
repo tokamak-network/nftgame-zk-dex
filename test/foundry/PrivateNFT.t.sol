@@ -204,4 +204,28 @@ contract PrivateNFTTest is Test {
     function test_IsNullifierUsed_False() public view {
         assertFalse(privateNFT.isNullifierUsed(keccak256("unused")));
     }
+
+    function testFuzz_TransferNFT(
+        bytes32 oldHash,
+        bytes32 newHash,
+        bytes32 nullifier,
+        uint256 nftId
+    ) public {
+        // Prevent hash collisions and zero values
+        vm.assume(oldHash != newHash);
+        vm.assume(oldHash != bytes32(0));
+        vm.assume(newHash != bytes32(0));
+        vm.assume(nullifier != bytes32(0));
+
+        privateNFT.registerNFT(oldHash, COLLECTION, nftId, ENC_NOTE);
+
+        privateNFT.transferNFT(
+            a, b, c,
+            oldHash, newHash, nftId, COLLECTION, nullifier, ENC_NOTE
+        );
+
+        assertEq(uint256(privateNFT.getNoteState(oldHash)), 2); // Spent
+        assertEq(uint256(privateNFT.getNoteState(newHash)), 1); // Valid
+        assertTrue(privateNFT.isNullifierUsed(nullifier));
+    }
 }
