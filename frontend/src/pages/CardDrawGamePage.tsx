@@ -192,12 +192,46 @@ export function CardDrawGamePage() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevGameStatusRef = useRef<GameStatus | null>(null);
 
   // 1-second clock
   useEffect(() => {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // Browser notification permission request (once on mount)
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  // Fire browser notification when the current room transitions to Revealing
+  // and the user is a participant
+  useEffect(() => {
+    if (!selectedGame || !address) return;
+    const prev = prevGameStatusRef.current;
+    const curr = selectedGame.status;
+
+    if (prev !== "Revealing" && curr === "Revealing") {
+      const amIPlayer = players.some(
+        (p) => p.addr.toLowerCase() === address.toLowerCase()
+      );
+      if (amIPlayer && !players.find(
+        (p) => p.addr.toLowerCase() === address.toLowerCase()
+      )?.hasRevealed) {
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification(`Game #${selectedGame.id} — REVEAL NOW!`, {
+            body: `You have ${Math.floor((selectedGame.revealDeadline - Date.now() / 1000))}s to submit your ZK proof. Don't forfeit your entry fee!`,
+            tag: `reveal-${selectedGame.id}`,
+          });
+        }
+      }
+    }
+
+    prevGameStatusRef.current = curr;
+  }, [selectedGame, players, address]);
 
   // Block number polling (for PendingReveal phase)
   useEffect(() => {
@@ -586,7 +620,9 @@ export function CardDrawGamePage() {
                       </span>
                     )}
                     {isRevealing && revealRemaining !== null && revealRemaining > 0 && (
-                      <span className="text-xs font-mono neon-text-cyan">
+                      <span className={`text-xs font-mono font-bold ${
+                        revealRemaining <= 30 ? "text-red-400 animate-pulse" : "neon-text-cyan"
+                      }`}>
                         Reveal: {formatCountdown(revealRemaining)}
                       </span>
                     )}
@@ -701,8 +737,12 @@ export function CardDrawGamePage() {
               </span>
             )}
             {isRevealing && revealRemaining !== null && (
-              <span className={`text-sm font-mono ${revealRemaining > 0 ? "neon-text-cyan" : "neon-text-green"}`}>
-                {revealRemaining > 0 ? `Reveal: ${formatCountdown(revealRemaining)}` : "READY TO CLOSE"}
+              <span className={`text-sm font-mono font-bold ${
+                revealRemaining <= 0 ? "neon-text-green" :
+                revealRemaining <= 30 ? "text-red-400 animate-pulse" :
+                "neon-text-cyan"
+              }`}>
+                {revealRemaining <= 0 ? "READY TO CLOSE" : `Reveal: ${formatCountdown(revealRemaining)}`}
               </span>
             )}
           </>
@@ -881,6 +921,31 @@ export function CardDrawGamePage() {
                     );
                   })}
               </div>
+            </div>
+          )}
+
+          {/* ── Reveal Countdown Banner ───────────────────────────── */}
+          {isRevealing && canReveal && revealRemaining !== null && revealRemaining > 0 && (
+            <div className={`glass-panel border p-4 text-center ${
+              revealRemaining <= 30
+                ? "border-red-500/60 bg-red-900/20 animate-pulse"
+                : "border-neon-cyan/40"
+            }`}>
+              <p className={`font-display text-xs tracking-wider mb-1 ${
+                revealRemaining <= 30 ? "text-red-400" : "neon-text-cyan"
+              }`}>
+                {revealRemaining <= 30 ? "URGENT — REVEAL NOW!" : "REVEAL PHASE ACTIVE"}
+              </p>
+              <p className={`font-mono text-3xl font-bold ${
+                revealRemaining <= 30 ? "text-red-400" : "neon-text-cyan"
+              }`}>
+                {formatCountdown(revealRemaining)}
+              </p>
+              <p className="text-[11px] text-gray-500 mt-1">
+                {revealRemaining <= 30
+                  ? "Entry fee will be forfeited if you don't reveal!"
+                  : "Submit your ZK proof before the deadline"}
+              </p>
             </div>
           )}
 

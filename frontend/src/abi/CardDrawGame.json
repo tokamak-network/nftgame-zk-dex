@@ -18,7 +18,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "_defaultTimeout",
+        "name": "_defaultCommitTimeout",
         "type": "uint256"
       }
     ],
@@ -56,7 +56,7 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "timeout",
+        "name": "commitTimeout",
         "type": "uint256"
       }
     ],
@@ -112,11 +112,11 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "drawnCard",
+        "name": "playerCount",
         "type": "uint256"
       }
     ],
-    "name": "PlayerDrew",
+    "name": "PlayerCommitted",
     "type": "event"
   },
   {
@@ -137,11 +137,61 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "playerCount",
+        "name": "drawnCard",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "drawIndex",
         "type": "uint256"
       }
     ],
-    "name": "PlayerJoined",
+    "name": "PlayerRevealed",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "gameId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "revealBlock",
+        "type": "uint256"
+      }
+    ],
+    "name": "RevealPending",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "gameId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "revealSeed",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "revealDeadline",
+        "type": "uint256"
+      }
+    ],
+    "name": "RevealStarted",
     "type": "event"
   },
   {
@@ -173,6 +223,19 @@
   {
     "inputs": [],
     "name": "MIN_PLAYERS",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "REVEAL_TIMEOUT",
     "outputs": [
       {
         "internalType": "uint256",
@@ -239,7 +302,7 @@
     "inputs": [
       {
         "internalType": "uint256",
-        "name": "timeout",
+        "name": "commitTimeout",
         "type": "uint256"
       }
     ],
@@ -256,7 +319,7 @@
   },
   {
     "inputs": [],
-    "name": "defaultTimeout",
+    "name": "defaultCommitTimeout",
     "outputs": [
       {
         "internalType": "uint256",
@@ -297,6 +360,19 @@
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "gameId",
+        "type": "uint256"
+      }
+    ],
+    "name": "finalizeReveal",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
         "name": "",
         "type": "uint256"
       }
@@ -315,7 +391,7 @@
       },
       {
         "internalType": "uint256",
-        "name": "timeout",
+        "name": "commitTimeout",
         "type": "uint256"
       },
       {
@@ -330,7 +406,27 @@
       },
       {
         "internalType": "uint256",
+        "name": "revealedCount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
         "name": "prizePool",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "revealBlock",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "revealSeed",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "revealDeadline",
         "type": "uint256"
       },
       {
@@ -376,7 +472,7 @@
           },
           {
             "internalType": "uint256",
-            "name": "timeout",
+            "name": "commitTimeout",
             "type": "uint256"
           },
           {
@@ -391,7 +487,27 @@
           },
           {
             "internalType": "uint256",
+            "name": "revealedCount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
             "name": "prizePool",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "revealBlock",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "revealSeed",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "revealDeadline",
             "type": "uint256"
           },
           {
@@ -436,19 +552,58 @@
             "type": "address"
           },
           {
+            "internalType": "bytes32",
+            "name": "deckCommitment",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "playerCommitment",
+            "type": "bytes32"
+          },
+          {
             "internalType": "uint256",
             "name": "drawnCard",
             "type": "uint256"
           },
           {
             "internalType": "bool",
-            "name": "hasDrawn",
+            "name": "hasCommitted",
+            "type": "bool"
+          },
+          {
+            "internalType": "bool",
+            "name": "hasRevealed",
             "type": "bool"
           }
         ],
         "internalType": "struct CardDrawGame.Player[]",
         "name": "",
         "type": "tuple[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "gameId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "player",
+        "type": "address"
+      }
+    ],
+    "name": "getPlayerDrawIndex",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
       }
     ],
     "stateMutability": "view",
@@ -486,44 +641,14 @@
         "type": "uint256"
       },
       {
-        "internalType": "uint256[2]",
-        "name": "a",
-        "type": "uint256[2]"
-      },
-      {
-        "internalType": "uint256[2][2]",
-        "name": "b",
-        "type": "uint256[2][2]"
-      },
-      {
-        "internalType": "uint256[2]",
-        "name": "c",
-        "type": "uint256[2]"
-      },
-      {
         "internalType": "bytes32",
         "name": "deckCommitment",
         "type": "bytes32"
       },
       {
         "internalType": "bytes32",
-        "name": "drawCommitment",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "uint256",
-        "name": "drawIndex",
-        "type": "uint256"
-      },
-      {
-        "internalType": "bytes32",
         "name": "playerCommitment",
         "type": "bytes32"
-      },
-      {
-        "internalType": "uint256",
-        "name": "drawnCard",
-        "type": "uint256"
       }
     ],
     "name": "joinGame",
@@ -555,6 +680,57 @@
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "gameId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256[2]",
+        "name": "a",
+        "type": "uint256[2]"
+      },
+      {
+        "internalType": "uint256[2][2]",
+        "name": "b",
+        "type": "uint256[2][2]"
+      },
+      {
+        "internalType": "uint256[2]",
+        "name": "c",
+        "type": "uint256[2]"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "drawCommitment",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "drawnCard",
+        "type": "uint256"
+      }
+    ],
+    "name": "revealCard",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "gameId",
+        "type": "uint256"
+      }
+    ],
+    "name": "startReveal",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
