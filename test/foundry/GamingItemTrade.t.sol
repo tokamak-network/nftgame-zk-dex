@@ -4,27 +4,44 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../../contracts/GamingItemTrade.sol";
 import "../../contracts/test/MockGamingItemTradeVerifier.sol";
+import "../../contracts/test/MockERC20.sol";
 
 contract GamingItemTradeTest is Test {
     GamingItemTrade public gamingItemTrade;
     MockGamingItemTradeVerifier public mockVerifier;
+    MockERC20 public token;
 
-    uint256 public constant GAME_ID = 42;
-    bytes public constant ENC_NOTE = "encrypted-data";
+    address public seller = address(0x10);
+    address public buyer  = address(0x20);
+
+    uint256 public constant GAME_ID    = 42;
+    uint256 public constant ITEM_PRICE = 100 ether;
+    bytes   public constant ENC_NOTE   = "encrypted-data";
+
+    // Dummy buyer ZK pubkey
+    uint256 public constant BUYER_PK_X = 123;
+    uint256 public constant BUYER_PK_Y = 456;
 
     // Groth16 dummy proof (mock always returns true)
-    uint256[2] internal a = [uint256(0), uint256(0)];
+    uint256[2]    internal a = [uint256(0), uint256(0)];
     uint256[2][2] internal b = [[uint256(0), uint256(0)], [uint256(0), uint256(0)]];
-    uint256[2] internal c = [uint256(0), uint256(0)];
+    uint256[2]    internal c = [uint256(0), uint256(0)];
 
     event ItemRegistered(uint256 indexed gameId, uint256 indexed itemId, bytes32 noteHash);
-    event ItemTraded(bytes32 indexed oldItemHash, bytes32 indexed newItemHash, bytes32 nullifier);
+    event ItemListed(address indexed seller, uint256 indexed listingId, uint256 price);
+    event ItemPurchased(address indexed buyer, uint256 indexed listingId, uint256 buyerPkX, uint256 buyerPkY);
+    event ItemTradeCompleted(uint256 indexed listingId, bytes32 oldNote, bytes32 newNote);
+    event ListingCancelled(uint256 indexed listingId);
     event NoteCreated(bytes32 indexed noteHash, bytes encryptedNote);
     event NoteSpent(bytes32 indexed noteHash, bytes32 indexed nullifier);
 
     function setUp() public {
         mockVerifier = new MockGamingItemTradeVerifier();
-        gamingItemTrade = new GamingItemTrade(address(mockVerifier));
+        token = new MockERC20();
+        gamingItemTrade = new GamingItemTrade(address(mockVerifier), address(token));
+
+        // Fund buyer with tokens
+        token.mint(buyer, ITEM_PRICE * 10);
     }
 
     // ========================
@@ -104,54 +121,166 @@ contract GamingItemTradeTest is Test {
     }
 
     // ========================
-    //  tradeItem (paid)
+    //  listItem
     // ========================
 
-    function test_TradeItem_Paid() public {
-        bytes32 oldHash = keccak256("old-item");
-        bytes32 newHash = keccak256("new-item");
-        bytes32 paymentHash = keccak256("payment");
-        bytes32 nullifier = keccak256("null-trade");
-        uint256 itemId = 101;
+    function test_ListItem() public {
+        bytes32 noteHash = keccak256("list-item");
 
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 1, ENC_NOTE);
+        gamingItemTrade.listItem(noteHash, GAME_ID, 1, ITEM_PRICE);
+        vm.stopPrank();
+
+        GamingItemTrade.Listing memory listing = gamingItemTrade.getListing(1);
+        assertEq(listing.seller, seller);
+        assertEq(listing.itemNoteHash, noteHash);
+        assertEq(listing.price, ITEM_PRICE);
+        assertTrue(listing.active);
+    }
+
+    function test_ListItem_EmitsEvent() public {
+        bytes32 noteHash = keccak256("list-evt");
+
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 2, ENC_NOTE);
+
+        vm.expectEmit(true, true, false, true);
+        emit ItemListed(seller, 1, ITEM_PRICE);
+
+        gamingItemTrade.listItem(noteHash, GAME_ID, 2, ITEM_PRICE);
+        vm.stopPrank();
+    }
+
+    function test_RevertWhen_ListItem_ZeroPrice() public {
+        bytes32 noteHash = keccak256("list-zero");
+
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 3, ENC_NOTE);
+
+        vm.expectRevert("Price must be greater than zero");
+        gamingItemTrade.listItem(noteHash, GAME_ID, 3, 0);
+        vm.stopPrank();
+    }
+
+    function test_RevertWhen_ListItem_NonExistentNote() public {
+        vm.expectRevert("Note does not exist or already spent");
+        gamingItemTrade.listItem(keccak256("nonexistent"), GAME_ID, 99, ITEM_PRICE);
+    }
+
+    // ========================
+    //  purchaseItem
+    // ========================
+
+    function test_PurchaseItem() public {
+        bytes32 noteHash = keccak256("purchase-item");
+
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 4, ENC_NOTE);
+        gamingItemTrade.listItem(noteHash, GAME_ID, 4, ITEM_PRICE);
+        vm.stopPrank();
+
+        vm.startPrank(buyer);
+        token.approve(address(gamingItemTrade), ITEM_PRICE);
+        gamingItemTrade.purchaseItem(1, BUYER_PK_X, BUYER_PK_Y);
+        vm.stopPrank();
+
+        GamingItemTrade.Listing memory listing = gamingItemTrade.getListing(1);
+        assertEq(listing.buyer, buyer);
+        assertEq(listing.buyerPkX, BUYER_PK_X);
+        assertEq(listing.buyerPkY, BUYER_PK_Y);
+        assertEq(token.balanceOf(address(gamingItemTrade)), ITEM_PRICE);
+    }
+
+    function test_PurchaseItem_EmitsEvent() public {
+        bytes32 noteHash = keccak256("purchase-evt");
+
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 5, ENC_NOTE);
+        gamingItemTrade.listItem(noteHash, GAME_ID, 5, ITEM_PRICE);
+        vm.stopPrank();
+
+        vm.startPrank(buyer);
+        token.approve(address(gamingItemTrade), ITEM_PRICE);
+
+        vm.expectEmit(true, true, false, true);
+        emit ItemPurchased(buyer, 1, BUYER_PK_X, BUYER_PK_Y);
+
+        gamingItemTrade.purchaseItem(1, BUYER_PK_X, BUYER_PK_Y);
+        vm.stopPrank();
+    }
+
+    function test_RevertWhen_PurchaseItem_NotActive() public {
+        vm.startPrank(buyer);
+        token.approve(address(gamingItemTrade), ITEM_PRICE);
+
+        vm.expectRevert("Listing not active");
+        gamingItemTrade.purchaseItem(999, BUYER_PK_X, BUYER_PK_Y);
+        vm.stopPrank();
+    }
+
+    function test_RevertWhen_PurchaseItem_AlreadyPurchased() public {
+        bytes32 noteHash = keccak256("purchase-dup");
+
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 6, ENC_NOTE);
+        gamingItemTrade.listItem(noteHash, GAME_ID, 6, ITEM_PRICE);
+        vm.stopPrank();
+
+        vm.startPrank(buyer);
+        token.approve(address(gamingItemTrade), ITEM_PRICE * 2);
+        gamingItemTrade.purchaseItem(1, BUYER_PK_X, BUYER_PK_Y);
+
+        vm.expectRevert("Already purchased");
+        gamingItemTrade.purchaseItem(1, BUYER_PK_X, BUYER_PK_Y);
+        vm.stopPrank();
+    }
+
+    // ========================
+    //  executeTradeForBuyer
+    // ========================
+
+    /// @dev Register + list as seller, then purchase as buyer. Returns note hashes and nullifier.
+    function _setupReadyToTrade(uint256 itemId)
+        internal
+        returns (bytes32 oldHash, bytes32 newHash, bytes32 nullifier)
+    {
+        oldHash   = keccak256(abi.encode("old-trade", itemId));
+        newHash   = keccak256(abi.encode("new-trade", itemId));
+        nullifier = keccak256(abi.encode("nullifier", itemId));
+
+        vm.startPrank(seller);
         gamingItemTrade.registerItem(oldHash, GAME_ID, itemId, ENC_NOTE);
+        gamingItemTrade.listItem(oldHash, GAME_ID, itemId, ITEM_PRICE);
+        vm.stopPrank();
 
-        gamingItemTrade.tradeItem(
-            a, b, c,
-            oldHash, newHash, paymentHash, GAME_ID, nullifier, ENC_NOTE
+        vm.startPrank(buyer);
+        token.approve(address(gamingItemTrade), ITEM_PRICE);
+        gamingItemTrade.purchaseItem(1, BUYER_PK_X, BUYER_PK_Y);
+        vm.stopPrank();
+    }
+
+    function test_ExecuteTradeForBuyer() public {
+        (bytes32 oldHash, bytes32 newHash, bytes32 nullifier) = _setupReadyToTrade(701);
+
+        uint256 sellerBalanceBefore = token.balanceOf(seller);
+
+        vm.prank(seller);
+        gamingItemTrade.executeTradeForBuyer(
+            1, a, b, c, newHash, bytes32(0), nullifier, ENC_NOTE
         );
 
         assertEq(uint256(gamingItemTrade.getNoteState(oldHash)), 2); // Spent
         assertEq(uint256(gamingItemTrade.getNoteState(newHash)), 1); // Valid
         assertTrue(gamingItemTrade.isNullifierUsed(nullifier));
+        assertFalse(gamingItemTrade.getListing(1).active);
+        assertEq(token.balanceOf(seller), sellerBalanceBefore + ITEM_PRICE);
     }
 
-    function test_TradeItem_Gift() public {
-        bytes32 oldHash = keccak256("old-gift");
-        bytes32 newHash = keccak256("new-gift");
-        bytes32 paymentHash = bytes32(0); // Gift: zero payment
-        bytes32 nullifier = keccak256("null-gift");
-        uint256 itemId = 202;
+    function test_ExecuteTradeForBuyer_EmitsEvents() public {
+        (bytes32 oldHash, bytes32 newHash, bytes32 nullifier) = _setupReadyToTrade(702);
 
-        gamingItemTrade.registerItem(oldHash, GAME_ID, itemId, ENC_NOTE);
-
-        gamingItemTrade.tradeItem(
-            a, b, c,
-            oldHash, newHash, paymentHash, GAME_ID, nullifier, ENC_NOTE
-        );
-
-        assertEq(uint256(gamingItemTrade.getNoteState(oldHash)), 2);
-        assertEq(uint256(gamingItemTrade.getNoteState(newHash)), 1);
-    }
-
-    function test_TradeItem_EmitsEvents() public {
-        bytes32 oldHash = keccak256("old-trade-evt");
-        bytes32 newHash = keccak256("new-trade-evt");
-        bytes32 paymentHash = keccak256("pay-evt");
-        bytes32 nullifier = keccak256("null-trade-evt");
-        uint256 itemId = 301;
-
-        gamingItemTrade.registerItem(oldHash, GAME_ID, itemId, ENC_NOTE);
+        vm.startPrank(seller);
 
         vm.expectEmit(true, true, false, true);
         emit NoteSpent(oldHash, nullifier);
@@ -159,79 +288,110 @@ contract GamingItemTradeTest is Test {
         vm.expectEmit(true, false, false, true);
         emit NoteCreated(newHash, ENC_NOTE);
 
-        vm.expectEmit(true, true, false, true);
-        emit ItemTraded(oldHash, newHash, nullifier);
+        vm.expectEmit(true, false, false, true);
+        emit ItemTradeCompleted(1, oldHash, newHash);
 
-        gamingItemTrade.tradeItem(
-            a, b, c,
-            oldHash, newHash, paymentHash, GAME_ID, nullifier, ENC_NOTE
+        gamingItemTrade.executeTradeForBuyer(
+            1, a, b, c, newHash, bytes32(0), nullifier, ENC_NOTE
+        );
+        vm.stopPrank();
+    }
+
+    function test_RevertWhen_ExecuteTrade_DoubleSpend() public {
+        (, bytes32 newHash, bytes32 nullifier) = _setupReadyToTrade(703);
+        bytes32 newHash2 = keccak256("ds-new-2");
+
+        vm.startPrank(seller);
+        gamingItemTrade.executeTradeForBuyer(
+            1, a, b, c, newHash, bytes32(0), nullifier, ENC_NOTE
+        );
+
+        vm.expectRevert("Nullifier already used");
+        gamingItemTrade.executeTradeForBuyer(
+            1, a, b, c, newHash2, bytes32(0), nullifier, ENC_NOTE
+        );
+        vm.stopPrank();
+    }
+
+    function test_RevertWhen_ExecuteTrade_NotSeller() public {
+        (, bytes32 newHash, bytes32 nullifier) = _setupReadyToTrade(704);
+
+        vm.prank(buyer);
+        vm.expectRevert("Only seller can execute trade");
+        gamingItemTrade.executeTradeForBuyer(
+            1, a, b, c, newHash, bytes32(0), nullifier, ENC_NOTE
         );
     }
 
-    function test_ChainedTrade() public {
-        bytes32 hashA = keccak256("item-A");
-        bytes32 hashB = keccak256("item-B");
-        bytes32 hashC = keccak256("item-C");
-        bytes32 pay1 = keccak256("pay-1");
-        bytes32 pay2 = keccak256("pay-2");
-        bytes32 null1 = keccak256("chain-null-1");
-        bytes32 null2 = keccak256("chain-null-2");
-        uint256 itemId = 401;
+    function test_RevertWhen_ExecuteTrade_NoBuyer() public {
+        bytes32 noteHash  = keccak256("no-buyer-note");
+        bytes32 newHash   = keccak256("no-buyer-new");
+        bytes32 nullifier = keccak256("no-buyer-null");
 
-        gamingItemTrade.registerItem(hashA, GAME_ID, itemId, ENC_NOTE);
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 705, ENC_NOTE);
+        gamingItemTrade.listItem(noteHash, GAME_ID, 705, ITEM_PRICE);
 
-        // A -> B
-        gamingItemTrade.tradeItem(a, b, c, hashA, hashB, pay1, GAME_ID, null1, ENC_NOTE);
-        assertEq(uint256(gamingItemTrade.getNoteState(hashA)), 2);
-        assertEq(uint256(gamingItemTrade.getNoteState(hashB)), 1);
-
-        // B -> C
-        gamingItemTrade.tradeItem(a, b, c, hashB, hashC, pay2, GAME_ID, null2, ENC_NOTE);
-        assertEq(uint256(gamingItemTrade.getNoteState(hashB)), 2);
-        assertEq(uint256(gamingItemTrade.getNoteState(hashC)), 1);
+        vm.expectRevert("No buyer yet");
+        gamingItemTrade.executeTradeForBuyer(
+            1, a, b, c, newHash, bytes32(0), nullifier, ENC_NOTE
+        );
+        vm.stopPrank();
     }
 
     // ========================
-    //  Rejection cases
+    //  cancelListing
     // ========================
 
-    function test_RevertWhen_DoubleSpend() public {
-        bytes32 oldHash = keccak256("old-ds");
-        bytes32 newHash1 = keccak256("new-ds-1");
-        bytes32 newHash2 = keccak256("new-ds-2");
-        bytes32 paymentHash = keccak256("pay-ds");
-        bytes32 nullifier = keccak256("null-ds");
-        uint256 itemId = 501;
+    function test_CancelListing_NoBuyer() public {
+        bytes32 noteHash = keccak256("cancel-no-buyer");
 
-        gamingItemTrade.registerItem(oldHash, GAME_ID, itemId, ENC_NOTE);
-        gamingItemTrade.tradeItem(a, b, c, oldHash, newHash1, paymentHash, GAME_ID, nullifier, ENC_NOTE);
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 801, ENC_NOTE);
+        gamingItemTrade.listItem(noteHash, GAME_ID, 801, ITEM_PRICE);
 
-        vm.expectRevert("Nullifier already used");
-        gamingItemTrade.tradeItem(a, b, c, newHash1, newHash2, paymentHash, GAME_ID, nullifier, ENC_NOTE);
+        vm.expectEmit(true, false, false, true);
+        emit ListingCancelled(1);
+
+        gamingItemTrade.cancelListing(1);
+        vm.stopPrank();
+
+        assertFalse(gamingItemTrade.getListing(1).active);
     }
 
-    function test_RevertWhen_SpentNote() public {
-        bytes32 oldHash = keccak256("old-spent");
-        bytes32 newHash = keccak256("new-spent");
-        bytes32 paymentHash = keccak256("pay-spent");
-        bytes32 null1 = keccak256("null-spent-1");
-        bytes32 null2 = keccak256("null-spent-2");
-        uint256 itemId = 502;
+    function test_CancelListing_WithBuyer_RefundsBuyer() public {
+        bytes32 noteHash = keccak256("cancel-with-buyer");
 
-        gamingItemTrade.registerItem(oldHash, GAME_ID, itemId, ENC_NOTE);
-        gamingItemTrade.tradeItem(a, b, c, oldHash, newHash, paymentHash, GAME_ID, null1, ENC_NOTE);
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 802, ENC_NOTE);
+        gamingItemTrade.listItem(noteHash, GAME_ID, 802, ITEM_PRICE);
+        vm.stopPrank();
 
-        vm.expectRevert("Note does not exist or already spent");
-        gamingItemTrade.tradeItem(a, b, c, oldHash, keccak256("x"), paymentHash, GAME_ID, null2, ENC_NOTE);
+        vm.startPrank(buyer);
+        token.approve(address(gamingItemTrade), ITEM_PRICE);
+        gamingItemTrade.purchaseItem(1, BUYER_PK_X, BUYER_PK_Y);
+        vm.stopPrank();
+
+        uint256 buyerBalanceBefore = token.balanceOf(buyer);
+
+        vm.prank(seller);
+        gamingItemTrade.cancelListing(1);
+
+        assertEq(token.balanceOf(buyer), buyerBalanceBefore + ITEM_PRICE);
+        assertFalse(gamingItemTrade.getListing(1).active);
     }
 
-    function test_RevertWhen_NonExistentNote() public {
-        bytes32 fakeHash = keccak256("nonexistent");
-        bytes32 newHash = keccak256("new-fake");
-        bytes32 nullifier = keccak256("null-fake");
+    function test_RevertWhen_CancelListing_NotSeller() public {
+        bytes32 noteHash = keccak256("cancel-auth");
 
-        vm.expectRevert("Note does not exist or already spent");
-        gamingItemTrade.tradeItem(a, b, c, fakeHash, newHash, bytes32(0), GAME_ID, nullifier, ENC_NOTE);
+        vm.startPrank(seller);
+        gamingItemTrade.registerItem(noteHash, GAME_ID, 803, ENC_NOTE);
+        gamingItemTrade.listItem(noteHash, GAME_ID, 803, ITEM_PRICE);
+        vm.stopPrank();
+
+        vm.prank(buyer);
+        vm.expectRevert("Only seller can cancel");
+        gamingItemTrade.cancelListing(1);
     }
 
     // ========================
@@ -247,31 +407,37 @@ contract GamingItemTradeTest is Test {
     }
 
     // ========================
-    //  Fuzz: trade flow
+    //  Fuzz: full trade flow
     // ========================
 
-    function testFuzz_TradeItem(
+    function testFuzz_ExecuteTradeForBuyer(
         bytes32 oldHash,
         bytes32 newHash,
-        bytes32 paymentHash,
         bytes32 nullifier,
         uint256 itemId
     ) public {
-        // Prevent hash collisions
         vm.assume(oldHash != newHash);
         vm.assume(oldHash != bytes32(0));
         vm.assume(newHash != bytes32(0));
         vm.assume(nullifier != bytes32(0));
 
+        vm.startPrank(seller);
         gamingItemTrade.registerItem(oldHash, GAME_ID, itemId, ENC_NOTE);
+        gamingItemTrade.listItem(oldHash, GAME_ID, itemId, ITEM_PRICE);
+        vm.stopPrank();
 
-        gamingItemTrade.tradeItem(
-            a, b, c,
-            oldHash, newHash, paymentHash, GAME_ID, nullifier, ENC_NOTE
+        vm.startPrank(buyer);
+        token.approve(address(gamingItemTrade), ITEM_PRICE);
+        gamingItemTrade.purchaseItem(1, BUYER_PK_X, BUYER_PK_Y);
+        vm.stopPrank();
+
+        vm.prank(seller);
+        gamingItemTrade.executeTradeForBuyer(
+            1, a, b, c, newHash, bytes32(0), nullifier, ENC_NOTE
         );
 
-        assertEq(uint256(gamingItemTrade.getNoteState(oldHash)), 2);
-        assertEq(uint256(gamingItemTrade.getNoteState(newHash)), 1);
+        assertEq(uint256(gamingItemTrade.getNoteState(oldHash)), 2); // Spent
+        assertEq(uint256(gamingItemTrade.getNoteState(newHash)), 1); // Valid
         assertTrue(gamingItemTrade.isNullifierUsed(nullifier));
     }
 }

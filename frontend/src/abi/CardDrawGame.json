@@ -421,6 +421,11 @@
       },
       {
         "internalType": "uint256",
+        "name": "prevRandaoSnapshot",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
         "name": "revealSeed",
         "type": "uint256"
       },
@@ -498,6 +503,11 @@
           {
             "internalType": "uint256",
             "name": "revealBlock",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "prevRandaoSnapshot",
             "type": "uint256"
           },
           {

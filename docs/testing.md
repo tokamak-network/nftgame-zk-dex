@@ -64,7 +64,7 @@ npx mocha test/circuits/nft-transfer.test.js --timeout 120000
 # Contract unit tests - Hardhat mock verifier (4 tests)
 npx hardhat test test/PrivateNFT.test.js
 
-# Contract unit tests - Foundry (14 tests including fuzz)
+# Contract unit tests - Foundry (15 tests including fuzz)
 forge test --match-contract PrivateNFTTest
 
 # Integration tests - real ZK proofs (9 tests)
@@ -80,7 +80,7 @@ npx mocha test/circuits/loot-box-open.test.js --timeout 120000
 # Contract unit tests - Hardhat mock verifier (9 tests)
 npx hardhat test test/LootBoxOpen.test.js
 
-# Contract unit tests - Foundry (15 tests including fuzz)
+# Contract unit tests - Foundry (20 tests including fuzz)
 forge test --match-contract LootBoxOpenTest
 
 # Integration tests - real ZK proofs (9 tests)
@@ -96,7 +96,7 @@ npx mocha test/circuits/gaming-item-trade.test.js --timeout 120000
 # Contract unit tests - Hardhat mock verifier (9 tests)
 npx hardhat test test/GamingItemTrade.test.js
 
-# Contract unit tests - Foundry (17 tests including fuzz)
+# Contract unit tests - Foundry (26 tests including fuzz)
 forge test --match-contract GamingItemTradeTest
 
 # Integration tests - real ZK proofs (9 tests)
@@ -125,7 +125,7 @@ npx hardhat test test/CardDraw.integration.test.js
 
 ## Test Breakdown
 
-### F1: Private NFT Transfer (24 Hardhat/Mocha + 14 Foundry)
+### F1: Private NFT Transfer (24 Hardhat/Mocha + 15 Foundry)
 
 #### Circuit Unit Tests (`test/circuits/nft-transfer.test.js`)
 
@@ -170,6 +170,7 @@ npx hardhat test test/CardDraw.integration.test.js
 | test_RevertWhen_NonExistentNote | Security | Non-existent note rejected |
 | test_GetNoteState_Invalid | View | Default state is Invalid (0) |
 | test_IsNullifierUsed_False | View | Default nullifier is unused |
+| testFuzz_TransferNFT | Fuzz (256 runs) | Random hashes/nullifier/nftId full transfer flow |
 
 #### Integration Tests (`test/PrivateNFT.integration.test.js`)
 
@@ -187,7 +188,7 @@ npx hardhat test test/CardDraw.integration.test.js
 
 ---
 
-### F4: Loot Box Open (33 Hardhat/Mocha + 15 Foundry)
+### F4: Loot Box Open (33 Hardhat/Mocha + 20 Foundry)
 
 #### Circuit Unit Tests (`test/circuits/loot-box-open.test.js`)
 
@@ -227,21 +228,26 @@ npx hardhat test test/CardDraw.integration.test.js
 
 | Test | Category | What it verifies |
 |------|----------|-----------------|
-| test_RegisterBox | Happy path | Basic box note creation |
+| test_MintBox | Happy path | Box purchase with ERC20 token, boxId assigned |
+| test_MintBox_EmitsEvent | Events | BoxMinted event with correct args |
+| test_RegisterBox | Happy path | Box note creation (requires prior mintBox) |
 | test_RegisterBox_EmitsEvent | Events | BoxRegistered event with correct args |
 | test_RegisterBox_EmitsNoteCreated | Events | NoteCreated event from base contract |
 | test_RevertWhen_DuplicateBoxRegistration | Security | Same boxId rejected |
 | test_RevertWhen_DuplicateNoteHash | Security | Same noteHash rejected |
-| testFuzz_RegisterBox | Fuzz (256 runs) | Random noteHash/boxId registration |
+| test_RevertWhen_RegisterBox_NotOwner | Security | Non-owner registration rejected |
+| testFuzz_RegisterBox | Fuzz (256 runs) | Random noteHash registration via mintBox flow |
 | test_OpenBox | Happy path | Full open flow with state changes |
 | test_OpenBox_EmitsEvents | Events | NoteSpent + NoteCreated + BoxOpened |
 | test_OpenMultipleBoxes | Happy path | Multiple boxes opened sequentially |
 | test_RevertWhen_DoubleOpen | Security | Same nullifier reuse blocked |
 | test_RevertWhen_SpentBox | Security | Already-spent box rejected |
 | test_RevertWhen_NonExistentBox | Security | Non-existent box rejected |
+| test_SetBoxPrice | Admin | Admin can update box price |
+| test_WithdrawTokens | Admin | Admin can withdraw accumulated tokens |
 | test_GetNoteState_Invalid | View | Default state is Invalid (0) |
 | test_IsNullifierUsed_False | View | Default nullifier is unused |
-| testFuzz_OpenBox | Fuzz (256 runs) | Random hashes/nullifier full open flow |
+| testFuzz_OpenBox | Fuzz (256 runs) | Random hashes/vrf/nullifier full open flow |
 
 #### Integration Tests (`test/LootBoxOpen.integration.test.js`)
 
@@ -259,7 +265,7 @@ npx hardhat test test/CardDraw.integration.test.js
 
 ---
 
-### F5: Gaming Item Trade (30 Hardhat/Mocha + 17 Foundry)
+### F5: Gaming Item Trade (30 Hardhat/Mocha + 26 Foundry)
 
 #### Circuit Unit Tests (`test/circuits/gaming-item-trade.test.js`)
 
@@ -294,6 +300,8 @@ npx hardhat test test/CardDraw.integration.test.js
 
 #### Foundry Tests (`test/foundry/GamingItemTrade.t.sol`)
 
+The F5 contract implements a P2P DEX flow: seller registers → lists → buyer purchases (ERC20 escrow) → seller executes trade with ZK proof.
+
 | Test | Category | What it verifies |
 |------|----------|-----------------|
 | test_RegisterItem | Happy path | Basic item note creation |
@@ -303,16 +311,25 @@ npx hardhat test test/CardDraw.integration.test.js
 | test_RevertWhen_DuplicateNoteHash | Security | Same noteHash rejected |
 | test_SameItemIdDifferentGames | Isolation | Same itemId in different games allowed |
 | testFuzz_RegisterItem | Fuzz (256 runs) | Random noteHash/gameId/itemId registration |
-| test_TradeItem_Paid | Happy path | Paid trade with mock verifier |
-| test_TradeItem_Gift | Happy path | Gift trade (paymentHash = 0) |
-| test_TradeItem_EmitsEvents | Events | NoteSpent + NoteCreated + ItemTraded |
-| test_ChainedTrade | Happy path | A -> B -> C multi-hop trade |
-| test_RevertWhen_DoubleSpend | Security | Same nullifier reuse blocked |
-| test_RevertWhen_SpentNote | Security | Already-spent note rejected |
-| test_RevertWhen_NonExistentNote | Security | Non-existent note rejected |
+| test_ListItem | Happy path | Seller lists registered item with price |
+| test_ListItem_EmitsEvent | Events | ItemListed event with correct args |
+| test_RevertWhen_ListItem_ZeroPrice | Security | Zero price rejected |
+| test_RevertWhen_ListItem_NonExistentNote | Security | Unlisted note rejected |
+| test_PurchaseItem | Happy path | Buyer pays ERC20 escrow, pubkey stored |
+| test_PurchaseItem_EmitsEvent | Events | ItemPurchased event with correct args |
+| test_RevertWhen_PurchaseItem_NotActive | Security | Inactive listing rejected |
+| test_RevertWhen_PurchaseItem_AlreadyPurchased | Security | Double-purchase rejected |
+| test_ExecuteTradeForBuyer | Happy path | Full trade: ZK proof, note transfer, payment release |
+| test_ExecuteTradeForBuyer_EmitsEvents | Events | NoteSpent + NoteCreated + ItemTradeCompleted |
+| test_RevertWhen_ExecuteTrade_DoubleSpend | Security | Same nullifier reuse blocked |
+| test_RevertWhen_ExecuteTrade_NotSeller | Security | Non-seller execution rejected |
+| test_RevertWhen_ExecuteTrade_NoBuyer | Security | Execution without buyer rejected |
+| test_CancelListing_NoBuyer | Happy path | Seller cancels before purchase (no refund) |
+| test_CancelListing_WithBuyer_RefundsBuyer | Happy path | Seller cancels after purchase, buyer refunded |
+| test_RevertWhen_CancelListing_NotSeller | Security | Non-seller cancellation rejected |
 | test_GetNoteState_Invalid | View | Default state is Invalid (0) |
 | test_IsNullifierUsed_False | View | Default nullifier is unused |
-| testFuzz_TradeItem | Fuzz (256 runs) | Random hashes/nullifier full trade flow |
+| testFuzz_ExecuteTradeForBuyer | Fuzz (256 runs) | Random hashes/nullifier full DEX trade flow |
 
 #### Integration Tests (`test/GamingItemTrade.integration.test.js`)
 
@@ -437,7 +454,7 @@ forge test --match-contract LootBoxOpenTest
 forge test --match-contract GamingItemTradeTest
 
 # Specific test
-forge test --match-test test_TradeItem_Gift
+forge test --match-test test_ExecuteTradeForBuyer
 
 # Increase fuzz runs
 forge test --fuzz-runs 1024
@@ -450,10 +467,11 @@ Fuzz tests use `vm.assume()` to filter invalid inputs and run 256 iterations by 
 | Test | Contract | Fuzz Parameters | What it validates |
 |------|----------|-----------------|-------------------|
 | `testFuzz_RegisterNFT` | PrivateNFT | noteHash, nftId | Registration works for any valid inputs |
-| `testFuzz_RegisterBox` | LootBoxOpen | noteHash, boxId | Registration works for any valid inputs |
-| `testFuzz_OpenBox` | LootBoxOpen | boxHash, outcomeHash, vrfOutput, nullifier, boxId | Full open flow with random values |
+| `testFuzz_TransferNFT` | PrivateNFT | oldHash, newHash, nullifier, nftId | Full transfer flow with random values |
+| `testFuzz_RegisterBox` | LootBoxOpen | noteHash | Registration works for any valid noteHash (boxId from mintBox) |
+| `testFuzz_OpenBox` | LootBoxOpen | boxHash, outcomeHash, vrfOutput, nullifier | Full open flow with random values |
 | `testFuzz_RegisterItem` | GamingItemTrade | noteHash, gameId, itemId | Registration works for any valid inputs |
-| `testFuzz_TradeItem` | GamingItemTrade | oldHash, newHash, paymentHash, nullifier, itemId | Full trade flow with random values |
+| `testFuzz_ExecuteTradeForBuyer` | GamingItemTrade | oldHash, newHash, nullifier, itemId | Full DEX trade flow with random values |
 | `testFuzz_RegisterDeck` | CardDraw | deckCommitment, gameId | Registration works for any valid inputs |
 | `testFuzz_DrawCard` | CardDraw | deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment | Full draw flow with random values |
 

@@ -64,7 +64,7 @@ npx mocha test/circuits/nft-transfer.test.js --timeout 120000
 # 컨트랙트 단위 테스트 - Hardhat mock verifier (4개 테스트)
 npx hardhat test test/PrivateNFT.test.js
 
-# 컨트랙트 단위 테스트 - Foundry (퍼즈 포함 14개 테스트)
+# 컨트랙트 단위 테스트 - Foundry (퍼즈 포함 15개 테스트)
 forge test --match-contract PrivateNFTTest
 
 # 통합 테스트 - 실제 ZK 증명 (9개 테스트)
@@ -80,7 +80,7 @@ npx mocha test/circuits/loot-box-open.test.js --timeout 120000
 # 컨트랙트 단위 테스트 - Hardhat mock verifier (9개 테스트)
 npx hardhat test test/LootBoxOpen.test.js
 
-# 컨트랙트 단위 테스트 - Foundry (퍼즈 포함 15개 테스트)
+# 컨트랙트 단위 테스트 - Foundry (퍼즈 포함 20개 테스트)
 forge test --match-contract LootBoxOpenTest
 
 # 통합 테스트 - 실제 ZK 증명 (9개 테스트)
@@ -96,7 +96,7 @@ npx mocha test/circuits/gaming-item-trade.test.js --timeout 120000
 # 컨트랙트 단위 테스트 - Hardhat mock verifier (9개 테스트)
 npx hardhat test test/GamingItemTrade.test.js
 
-# 컨트랙트 단위 테스트 - Foundry (퍼즈 포함 17개 테스트)
+# 컨트랙트 단위 테스트 - Foundry (퍼즈 포함 26개 테스트)
 forge test --match-contract GamingItemTradeTest
 
 # 통합 테스트 - 실제 ZK 증명 (9개 테스트)
@@ -125,7 +125,7 @@ npx hardhat test test/CardDraw.integration.test.js
 
 ## 테스트 상세 구성
 
-### F1: 비공개 NFT 전송 (Hardhat/Mocha 24개 + Foundry 14개)
+### F1: 비공개 NFT 전송 (Hardhat/Mocha 24개 + Foundry 15개)
 
 #### 회로 단위 테스트 (`test/circuits/nft-transfer.test.js`)
 
@@ -170,6 +170,7 @@ npx hardhat test test/CardDraw.integration.test.js
 | test_RevertWhen_NonExistentNote | 보안 | 존재하지 않는 노트 거절 |
 | test_GetNoteState_Invalid | 뷰 | 기본 상태가 Invalid(0)인지 확인 |
 | test_IsNullifierUsed_False | 뷰 | 기본 널리파이어가 미사용 상태인지 확인 |
+| testFuzz_TransferNFT | 퍼즈 (256회) | 무작위 해시/널리파이어/nftId 전체 전송 흐름 |
 
 #### 통합 테스트 (`test/PrivateNFT.integration.test.js`)
 
@@ -187,14 +188,14 @@ npx hardhat test test/CardDraw.integration.test.js
 
 ---
 
-### F4: 루트 박스 개봉 (Hardhat/Mocha 33개 + Foundry 15개)
+### F4: 루트 박스 개봉 (Hardhat/Mocha 33개 + Foundry 20개)
 
 #### 회로 단위 테스트 (`test/circuits/loot-box-open.test.js`)
 
 | 테스트 | 카테고리 | 검증 내용 |
 |------|----------|-----------------|
 | Valid loot box open proof | Happy path | 전체 증명 라이프사이클 |
-| Correct public signals order | Happy path | 5개 신호 순서 확인 |
+| Correct public signals order | Happy path | 5개 신호: boxCommitment, outcomeCommitment, vrfOutput, boxId, nullifier |
 | Different box types produce different proofs | Happy path | 박스 타입별 차별화 |
 | Same owner different boxes produce different VRF | Happy path | 박스별 VRF 고유성 |
 | Wrong secret key | 보안 | 소유권 검증 |
@@ -227,21 +228,26 @@ npx hardhat test test/CardDraw.integration.test.js
 
 | 테스트 | 카테고리 | 검증 내용 |
 |------|----------|-----------------|
-| test_RegisterBox | Happy path | 기본 박스 노트 생성 |
+| test_MintBox | Happy path | ERC20 토큰으로 박스 구매, boxId 할당 |
+| test_MintBox_EmitsEvent | 이벤트 | 올바른 인자를 가진 BoxMinted 이벤트 |
+| test_RegisterBox | Happy path | 박스 노트 생성 (mintBox 선행 필요) |
 | test_RegisterBox_EmitsEvent | 이벤트 | 올바른 인자를 가진 BoxRegistered 이벤트 |
 | test_RegisterBox_EmitsNoteCreated | 이벤트 | 기본 컨트랙트의 NoteCreated 이벤트 |
 | test_RevertWhen_DuplicateBoxRegistration | 보안 | 동일 boxId 거절 |
 | test_RevertWhen_DuplicateNoteHash | 보안 | 동일 noteHash 거절 |
-| testFuzz_RegisterBox | 퍼즈 (256회) | 무작위 noteHash/boxId 등록 |
+| test_RevertWhen_RegisterBox_NotOwner | 보안 | 소유자가 아닌 등록 시도 거절 |
+| testFuzz_RegisterBox | 퍼즈 (256회) | mintBox 흐름을 통한 무작위 noteHash 등록 |
 | test_OpenBox | Happy path | 상태 변경을 포함한 전체 개봉 흐름 |
 | test_OpenBox_EmitsEvents | 이벤트 | NoteSpent + NoteCreated + BoxOpened |
 | test_OpenMultipleBoxes | Happy path | 여러 박스 순차 개봉 |
 | test_RevertWhen_DoubleOpen | 보안 | 동일 널리파이어 재사용 차단 |
 | test_RevertWhen_SpentBox | 보안 | 이미 소비된 박스 거절 |
 | test_RevertWhen_NonExistentBox | 보안 | 존재하지 않는 박스 거절 |
-| test_GetNoteState_Invalid | 뷰 | 기본 상태 확인 |
-| test_IsNullifierUsed_False | 뷰 | 기본 널리파이어 상태 확인 |
-| testFuzz_OpenBox | 퍼즈 (256회) | 무작위 값을 통한 전체 개봉 흐름 |
+| test_SetBoxPrice | 관리자 | 관리자가 박스 가격 업데이트 가능 |
+| test_WithdrawTokens | 관리자 | 관리자가 누적된 토큰 출금 가능 |
+| test_GetNoteState_Invalid | 뷰 | 기본 상태가 Invalid(0)인지 확인 |
+| test_IsNullifierUsed_False | 뷰 | 기본 널리파이어가 미사용 상태인지 확인 |
+| testFuzz_OpenBox | 퍼즈 (256회) | 무작위 해시/vrf/널리파이어 전체 개봉 흐름 |
 
 #### 통합 테스트 (`test/LootBoxOpen.integration.test.js`)
 
@@ -259,7 +265,7 @@ npx hardhat test test/CardDraw.integration.test.js
 
 ---
 
-### F5: 게임 아이템 거래 (Hardhat/Mocha 30개 + Foundry 17개)
+### F5: 게임 아이템 거래 (Hardhat/Mocha 30개 + Foundry 26개)
 
 #### 회로 단위 테스트 (`test/circuits/gaming-item-trade.test.js`)
 
@@ -267,7 +273,7 @@ npx hardhat test test/CardDraw.integration.test.js
 |------|----------|-----------------|
 | Valid paid trade proof | Happy path | 유료 거래(price > 0) 전체 라이프사이클 |
 | Valid gift (price=0) proof | Happy path | paymentNoteHash = 0인 무료 전송 |
-| Correct public signals order | Happy path | 5개 신호 순서 확인 |
+| Correct public signals order | Happy path | 5개 신호: oldItemHash, newItemHash, paymentNoteHash, gameId, nullifier |
 | Wrong secret key | 보안 | 소유권 검증 |
 | Wrong itemId | 보안 | 아이템 식별자 보존 |
 | Wrong gameId | 보안 | 게임 생태계 격리 |
@@ -294,6 +300,8 @@ npx hardhat test test/CardDraw.integration.test.js
 
 #### Foundry 테스트 (`test/foundry/GamingItemTrade.t.sol`)
 
+F5 컨트랙트는 P2P DEX 흐름을 구현합니다: 판매자 등록 → 리스팅 → 구매자 구매 (ERC20 에스크로) → 판매자가 ZK 증명과 함께 거래 실행.
+
 | 테스트 | 카테고리 | 검증 내용 |
 |------|----------|-----------------|
 | test_RegisterItem | Happy path | 기본 아이템 노트 생성 |
@@ -302,17 +310,26 @@ npx hardhat test test/CardDraw.integration.test.js
 | test_RevertWhen_DuplicateItemRegistration | 보안 | 동일 gameId/itemId 거절 |
 | test_RevertWhen_DuplicateNoteHash | 보안 | 동일 noteHash 거절 |
 | test_SameItemIdDifferentGames | 격리 | 다른 게임에서 동일 itemId 허용 |
-| testFuzz_RegisterItem | 퍼즈 (256회) | 무작위 등록 검증 |
-| test_TradeItem_Paid | Happy path | 모의 검증기를 이용한 유료 거래 |
-| test_TradeItem_Gift | Happy path | 선물 거래 (paymentHash = 0) |
-| test_TradeItem_EmitsEvents | 이벤트 | NoteSpent + NoteCreated + ItemTraded |
-| test_ChainedTrade | Happy path | A -> B -> C 다단계 거래 |
-| test_RevertWhen_DoubleSpend | 보안 | 동일 널리파이어 재사용 차단 |
-| test_RevertWhen_SpentNote | 보안 | 이미 소비된 노트 거절 |
-| test_RevertWhen_NonExistentNote | 보안 | 존재하지 않는 노트 거절 |
-| test_GetNoteState_Invalid | 뷰 | 기본 상태 확인 |
-| test_IsNullifierUsed_False | 뷰 | 기본 널리파이어 상태 확인 |
-| testFuzz_TradeItem | 퍼즈 (256회) | 무작위 전체 거래 흐름 |
+| testFuzz_RegisterItem | 퍼즈 (256회) | 무작위 noteHash/gameId/itemId 등록 |
+| test_ListItem | Happy path | 판매자가 등록된 아이템을 가격과 함께 리스팅 |
+| test_ListItem_EmitsEvent | 이벤트 | 올바른 인자를 가진 ItemListed 이벤트 |
+| test_RevertWhen_ListItem_ZeroPrice | 보안 | 가격이 0인 리스팅 거절 |
+| test_RevertWhen_ListItem_NonExistentNote | 보안 | 등록되지 않은 노트 리스팅 거절 |
+| test_PurchaseItem | Happy path | 구매자가 ERC20 에스크로 결제, 공개키 저장 |
+| test_PurchaseItem_EmitsEvent | 이벤트 | 올바른 인자를 가진 ItemPurchased 이벤트 |
+| test_RevertWhen_PurchaseItem_NotActive | 보안 | 활성화되지 않은 리스팅 구매 거절 |
+| test_RevertWhen_PurchaseItem_AlreadyPurchased | 보안 | 중복 구매 거절 |
+| test_ExecuteTradeForBuyer | Happy path | 전체 거래: ZK 증명, 노트 전송, 결제 대금 해제 |
+| test_ExecuteTradeForBuyer_EmitsEvents | 이벤트 | NoteSpent + NoteCreated + ItemTradeCompleted |
+| test_RevertWhen_ExecuteTrade_DoubleSpend | 보안 | 동일 널리파이어 재사용 차단 |
+| test_RevertWhen_ExecuteTrade_NotSeller | 보안 | 판매자가 아닌 자의 거래 실행 거절 |
+| test_RevertWhen_ExecuteTrade_NoBuyer | 보안 | 구매자가 없는 상태에서 실행 거절 |
+| test_CancelListing_NoBuyer | Happy path | 구매 전 판매자의 리스팅 취소 (환불 없음) |
+| test_CancelListing_WithBuyer_RefundsBuyer | Happy path | 구매 후 판매자의 리스팅 취소, 구매자에게 환불 |
+| test_RevertWhen_CancelListing_NotSeller | 보안 | 판매자가 아닌 자의 취소 거절 |
+| test_GetNoteState_Invalid | 뷰 | 기본 상태가 Invalid(0)인지 확인 |
+| test_IsNullifierUsed_False | 뷰 | 기본 널리파이어가 미사용 상태인지 확인 |
+| testFuzz_ExecuteTradeForBuyer | 퍼즈 (256회) | 무작위 해시/널리파이어 전체 DEX 거래 흐름 |
 
 #### 통합 테스트 (`test/GamingItemTrade.integration.test.js`)
 
@@ -337,7 +354,7 @@ npx hardhat test test/CardDraw.integration.test.js
 | 테스트 | 카테고리 | 검증 내용 |
 |------|----------|-----------------|
 | Valid card draw proof | Happy path | Fisher-Yates 셔플을 포함한 전체 증명 라이프사이클 |
-| Correct public signals order | Happy path | 5개 신호 순서 확인 |
+| Correct public signals order | Happy path | 5개 신호: deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment |
 | Different draw indices | Happy path | 0이 아닌 인덱스(25)에서의 드로우 |
 | Different seeds produce different shuffles | Happy path | 시드별 셔플 고유성 |
 | Wrong secret key | 보안 | 소유권 검증 |
@@ -374,16 +391,16 @@ npx hardhat test test/CardDraw.integration.test.js
 | test_RegisterDeck_EmitsNoteCreated | 이벤트 | 기본 컨트랙트의 NoteCreated 이벤트 |
 | test_RevertWhen_DuplicateGameRegistration | 보안 | 동일 gameId 거절 |
 | test_RevertWhen_DuplicateNoteHash | 보안 | 동일 noteHash 거절 |
-| testFuzz_RegisterDeck | 퍼즈 (256회) | 무작위 덱 등록 검증 |
+| testFuzz_RegisterDeck | 퍼즈 (256회) | 무작위 deckCommitment/gameId 등록 |
 | test_DrawCard | Happy path | 전체 드로우 흐름, 덱은 Valid 유지 |
 | test_DrawCard_EmitsEvents | 이벤트 | NoteCreated + CardDrawn |
 | test_DrawMultipleCards | Happy path | 인덱스 0, 1, 2에서 3회 연속 드로우 |
 | test_RevertWhen_DuplicateDrawIndex | 보안 | 동일 drawIndex 재사용 차단 |
 | test_RevertWhen_UnregisteredGame | 보안 | 존재하지 않는 게임 거절 |
 | test_RevertWhen_WrongDeckCommitment | 보안 | 잘못된 덱 해시 거절 |
-| test_GetNoteState_Invalid | 뷰 | 기본 상태 확인 |
-| test_DrawnCards_False | 뷰 | 기본 드로우 상태 확인 |
-| testFuzz_DrawCard | 퍼즈 (256회) | 무작위 전체 드로우 흐름 |
+| test_GetNoteState_Invalid | 뷰 | 기본 상태가 Invalid(0)인지 확인 |
+| test_DrawnCards_False | 뷰 | 기본 드로우 상태가 false인지 확인 |
+| testFuzz_DrawCard | 퍼즈 (256회) | 무작위 해시/인덱스 전체 드로우 흐름 |
 
 #### 통합 테스트 (`test/CardDraw.integration.test.js`)
 
@@ -437,7 +454,7 @@ forge test --match-contract LootBoxOpenTest
 forge test --match-contract GamingItemTradeTest
 
 # 특정 테스트만 실행
-forge test --match-test test_TradeItem_Gift
+forge test --match-test test_ExecuteTradeForBuyer
 
 # 퍼즈 횟수 늘리기
 forge test --fuzz-runs 1024
@@ -450,10 +467,11 @@ forge test --fuzz-runs 1024
 | 테스트 | 컨트랙트 | 퍼즈 파라미터 | 검증 내용 |
 |------|----------|-----------------|-------------------|
 | `testFuzz_RegisterNFT` | PrivateNFT | noteHash, nftId | 유효한 입력에 대해 등록이 항상 작동함 |
-| `testFuzz_RegisterBox` | LootBoxOpen | noteHash, boxId | 유효한 입력에 대해 등록이 항상 작동함 |
-| `testFuzz_OpenBox` | LootBoxOpen | boxHash, outcomeHash, vrfOutput, nullifier, boxId | 무작위 값에 대한 전체 개봉 흐름 |
+| `testFuzz_TransferNFT` | PrivateNFT | oldHash, newHash, nullifier, nftId | 무작위 값에 대한 전체 전송 흐름 |
+| `testFuzz_RegisterBox` | LootBoxOpen | noteHash | 유효한 noteHash에 대해 등록이 항상 작동함 (boxId는 mintBox에서 할당) |
+| `testFuzz_OpenBox` | LootBoxOpen | boxHash, outcomeHash, vrfOutput, nullifier | 무작위 값에 대한 전체 개봉 흐름 |
 | `testFuzz_RegisterItem` | GamingItemTrade | noteHash, gameId, itemId | 유효한 입력에 대해 등록이 항상 작동함 |
-| `testFuzz_TradeItem` | GamingItemTrade | oldHash, newHash, paymentHash, nullifier, itemId | 무작위 값에 대한 전체 거래 흐름 |
+| `testFuzz_ExecuteTradeForBuyer` | GamingItemTrade | oldHash, newHash, nullifier, itemId | 무작위 값에 대한 전체 DEX 거래 흐름 |
 | `testFuzz_RegisterDeck` | CardDraw | deckCommitment, gameId | 유효한 입력에 대해 등록이 항상 작동함 |
 | `testFuzz_DrawCard` | CardDraw | deckCommitment, drawCommitment, drawIndex, gameId, playerCommitment | 무작위 값에 대한 전체 드로우 흐름 |
 
@@ -488,7 +506,7 @@ npx hardhat compile
 
 회로 증명 생성은 느릴 수 있습니다. 타임아웃 시간을 늘리세요:
 ```bash
-npx mocha test/circuits/ --timeout 300000 --exit
+npx mocha test/circuits/ --timeout 300000
 ```
 
 ### 네 개의 Groth16Verifier 컨트랙트
